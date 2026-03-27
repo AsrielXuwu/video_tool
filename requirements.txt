@@ -1,0 +1,5 @@
+# 核心数据处理
+pandas
+
+# Excel 导出支持 (pandas 导出 xlsx 必须)
+openpyxl

@@ -1,0 +1,84 @@
+name: Cross-Platform Build
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      # 矩阵策略：同时在 Windows 和 macOS 虚拟机上运行
+      matrix:
+        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            artifact_name: ffmpeg-tool-windows
+            executable_name: ffmpeg_tool.exe
+            ffmpeg_url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+          - os: macos-latest
+            artifact_name: ffmpeg-tool-macos
+            executable_name: ffmpeg_tool.app
+            ffmpeg_url: https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller pandas openpyxl  # 包含脚本中的 pandas 依赖 [cite: 1, 54]
+
+    # 根据 matrix 下载对应平台的 FFmpeg 二进制文件
+    - name: Download and Setup FFmpeg
+      shell: bash
+      run: |
+        mkdir -p ffmpeg
+        curl -L ${{ matrix.ffmpeg_url }} -o ffmpeg.zip
+        unzip -j ffmpeg.zip '**/ffmpeg*' '**/ffprobe*' -d ffmpeg/
+        # macOS 下需要给二进制文件执行权限
+        if [ "${{ matrix.os }}" == "macos-latest" ]; then
+          chmod +x ffmpeg/ffmpeg ffmpeg/ffprobe
+        fi
+
+    - name: Build with PyInstaller (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        # 使用 --noconsole 对应 .pyw 的无窗口需求
+        pyinstaller --noconsole --onefile --name "VideoTool" ffmpeg_tool.pyw
+
+    - name: Build with PyInstaller (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        # macOS 打包为 .app 束
+        pyinstaller --windowed --name "VideoTool" ffmpeg_tool.pyw
+
+    # 关键步骤：按照你代码中的目录结构组织成品
+    # 代码通过 base_path/ffmpeg/filename 寻找 [cite: 3]
+    - name: Prepare Artifacts
+      shell: bash
+      run: |
+        mkdir -p release_dist
+        if [ "${{ matrix.os }}" == "windows-latest" ]; then
+          cp dist/VideoTool.exe release_dist/
+          cp -r ffmpeg release_dist/
+        else
+          # macOS 下通常将 ffmpeg 放在 .app 内部或同级
+          cp -r dist/VideoTool.app release_dist/
+          cp -r ffmpeg release_dist/
+        fi
+
+    - name: Upload result
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: release_dist/

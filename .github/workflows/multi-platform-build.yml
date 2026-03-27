@@ -8,18 +8,13 @@ on:
 jobs:
   build:
     strategy:
-      # 矩阵策略：同时在 Windows 和 macOS 虚拟机上运行
       matrix:
         os: [windows-latest, macos-latest]
         include:
           - os: windows-latest
             artifact_name: ffmpeg-tool-windows
-            executable_name: ffmpeg_tool.exe
-            ffmpeg_url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
           - os: macos-latest
             artifact_name: ffmpeg-tool-macos
-            executable_name: ffmpeg_tool.app
-            ffmpeg_url: https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip
 
     runs-on: ${{ matrix.os }}
 
@@ -36,34 +31,38 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller pandas openpyxl  # 包含脚本中的 pandas 依赖 [cite: 1, 54]
+        pip install pyinstaller pandas openpyxl
 
-    # 根据 matrix 下载对应平台的 FFmpeg 二进制文件
+    # 重点修正：分平台下载并解压组件
     - name: Download and Setup FFmpeg
       shell: bash
       run: |
         mkdir -p ffmpeg
-        curl -L ${{ matrix.ffmpeg_url }} -o ffmpeg.zip
-        unzip -j ffmpeg.zip '**/ffmpeg*' '**/ffprobe*' -d ffmpeg/
-        # macOS 下需要给二进制文件执行权限
-        if [ "${{ matrix.os }}" == "macos-latest" ]; then
+        if [ "${{ matrix.os }}" == "windows-latest" ]; then
+          # Windows: 从 BtbN 下载（包含 ffmpeg 和 ffprobe）
+          curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -o ffmpeg.zip
+          unzip -j ffmpeg.zip '**/bin/ffmpeg.exe' '**/bin/ffprobe.exe' -d ffmpeg/
+        else
+          # macOS: 从 Evermeet 分别下载 ffmpeg 和 ffprobe（因为它们不在同一个包里）
+          curl -L https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip -o ffmpeg_mac.zip
+          unzip -j ffmpeg_mac.zip -d ffmpeg/
+          curl -L https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip -o ffprobe_mac.zip
+          unzip -j ffprobe_mac.zip -d ffmpeg/
           chmod +x ffmpeg/ffmpeg ffmpeg/ffprobe
         fi
 
     - name: Build with PyInstaller (Windows)
       if: matrix.os == 'windows-latest'
       run: |
-        # 使用 --noconsole 对应 .pyw 的无窗口需求
+        # 使用 --noconsole 对应 .pyw 的需求
         pyinstaller --noconsole --onefile --name "VideoTool" ffmpeg_tool.pyw
 
     - name: Build with PyInstaller (macOS)
       if: matrix.os == 'macos-latest'
       run: |
-        # macOS 打包为 .app 束
+        # macOS 打包为 .app 
         pyinstaller --windowed --name "VideoTool" ffmpeg_tool.pyw
 
-    # 关键步骤：按照你代码中的目录结构组织成品
-    # 代码通过 base_path/ffmpeg/filename 寻找 [cite: 3]
     - name: Prepare Artifacts
       shell: bash
       run: |
@@ -72,7 +71,7 @@ jobs:
           cp dist/VideoTool.exe release_dist/
           cp -r ffmpeg release_dist/
         else
-          # macOS 下通常将 ffmpeg 放在 .app 内部或同级
+          # 保持 ffmpeg 文件夹与 .app 同级，符合代码 get_bin_path 逻辑
           cp -r dist/VideoTool.app release_dist/
           cp -r ffmpeg release_dist/
         fi

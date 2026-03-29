@@ -94,9 +94,9 @@ class FFmpegUltimateTool:
         self.root = root
         self.root.title("视频批量处理工具")
         # 增加窗口宽度与高度以完美容纳加宽的下拉框和单选框
-        self.root.geometry("730x600")
+        self.root.geometry("845x615")
         self.root.resizable(True, True)
-        self.root.minsize(730, 600)
+        self.root.minsize(600, 600)
 
         style = ttk.Style()
         if "vista" in style.theme_names():
@@ -147,6 +147,8 @@ class FFmpegUltimateTool:
         self.threads_var = tk.StringVar(value="自动")
         self.threads_options = ["自动", "1", "2", "4", "8", "16", "32"]
 
+        self.audio_bitrate_var = tk.StringVar(value="192") # 新增: 视频批量处理音频码率
+
         self.force_sync = tk.BooleanVar(value=False)
 
         self.output_as_zip = tk.BooleanVar(value=False)
@@ -162,6 +164,7 @@ class FFmpegUltimateTool:
         self.m_quality_mode = tk.IntVar(value=2)
         self.m_bitrate = tk.StringVar(value="3000")
         self.m_crf = tk.StringVar(value="28")
+        self.m_audio_bitrate_var = tk.StringVar(value="320") # 新增: 默认 320kbps 高音质
         
         self.m_res_mode = tk.IntVar(value=1)
         self.m_prop_w_en = tk.BooleanVar(value=True) 
@@ -236,6 +239,7 @@ class FFmpegUltimateTool:
         self.sm_quality_mode = tk.IntVar(value=2)
         self.sm_bitrate = tk.StringVar(value="3000")
         self.sm_crf = tk.StringVar(value="28")
+        self.sm_audio_bitrate_var = tk.StringVar(value="320") # 新增: 默认 320kbps 高音质
         
         self.sm_res_mode = tk.IntVar(value=1)
         self.sm_prop_w_en = tk.BooleanVar(value=True) 
@@ -338,10 +342,14 @@ class FFmpegUltimateTool:
         cb_threads = ttk.Combobox(lf_other, textvariable=self.threads_var, values=self.threads_options, width=8, state="readonly")
         cb_threads.grid(row=5, column=1, pady=(10,0))
 
-        ttk.Separator(lf_other, orient='horizontal').grid(row=6, column=0, columnspan=2, sticky="we", pady=10)
-        ttk.Checkbutton(lf_other, text="保留原音频 (无损极速)", variable=self.copy_audio).grid(row=7, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(lf_other, text="Web优化 (边下边播)", variable=self.faststart).grid(row=8, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(lf_other, text="强制音画同步 (防时长微调)", variable=self.force_sync).grid(row=9, column=0, columnspan=2, sticky="w")
+        ttk.Label(lf_other, text="音频码率:").grid(row=6, column=0, sticky="w", pady=(10,0))
+        cb_audio_br = ttk.Combobox(lf_other, textvariable=self.audio_bitrate_var, values=["保持原始", "128", "192", "256", "320"], width=8)
+        cb_audio_br.grid(row=6, column=1, pady=(10,0))
+
+        ttk.Separator(lf_other, orient='horizontal').grid(row=7, column=0, columnspan=2, sticky="we", pady=10)
+        ttk.Checkbutton(lf_other, text="保留原音频 (无损极速)", variable=self.copy_audio).grid(row=8, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(lf_other, text="Web优化 (边下边播)", variable=self.faststart).grid(row=9, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(lf_other, text="强制音画同步 (防时长微调)", variable=self.force_sync).grid(row=10, column=0, columnspan=2, sticky="w")
 
         # === 替换为新的底部紧凑操作区 (同行布局) ===
         frame_bottom = ttk.Frame(self.tab_process, padding=(10, 10))
@@ -636,6 +644,20 @@ class FFmpegUltimateTool:
             pass
         return None
 
+    def get_audio_stream_bitrate(self, filepath):
+        """核心辅助：智能获取音频流原码率"""
+        try:
+            cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'a:0', filepath]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            data = json.loads(result.stdout)
+            if 'streams' in data and len(data['streams']) > 0:
+                stream = data['streams'][0]
+                if 'bit_rate' in stream:
+                    return f"{stream['bit_rate']}"
+        except Exception:
+            pass
+        return None
+
     def start_processing(self):
         in_dir, out_dir = self.in_dir.get(), self.out_dir.get()
         if not os.path.exists(in_dir) or not out_dir:
@@ -765,7 +787,15 @@ class FFmpegUltimateTool:
             if self.copy_audio.get() or encoder == "copy":
                 cmd.extend(["-c:a", "copy"])
             else:
-                cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                audio_br = self.audio_bitrate_var.get().strip()
+                if audio_br == "保持原始":
+                    orig_a_br = self.get_audio_stream_bitrate(in_file)
+                    if orig_a_br:
+                        cmd.extend(["-c:a", "aac", "-b:a", orig_a_br])
+                    else:
+                        cmd.extend(["-c:a", "aac", "-b:a", "192k"]) # 获取失败兜底
+                else:
+                    cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
 
             if self.faststart.get() and out_ext.lower() in ['.mp4', '.mov']:
                 cmd.extend(["-movflags", "+faststart"])
@@ -1232,21 +1262,25 @@ class FFmpegUltimateTool:
 
         ttk.Radiobutton(frame_q_m, text="保原码率", variable=self.m_quality_mode, value=3).grid(row=0, column=4, sticky="w")
 
-        # 视频帧率、预设、线程数 (紧凑横向布局)
+        # 视频帧率、预设、线程、音码 (极限单行横向排布)
         f_other_m = ttk.Frame(lf_right)
         f_other_m.grid(row=6, column=0, columnspan=2, sticky="we", pady=(5, 0))
         
-        ttk.Label(f_other_m, text="FPS:").grid(row=0, column=0, sticky="w", pady=2)
-        cb_fps_m = ttk.Combobox(f_other_m, textvariable=self.m_fps_var, values=self.fps_options, state="readonly", width=6)
-        cb_fps_m.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        ttk.Label(f_other_m, text="FPS:").pack(side="left", pady=2)
+        cb_fps_m = ttk.Combobox(f_other_m, textvariable=self.m_fps_var, values=self.fps_options, state="readonly", width=5)
+        cb_fps_m.pack(side="left", padx=(0, 8))
 
-        ttk.Label(f_other_m, text="预设:").grid(row=0, column=2, sticky="w", pady=2)
+        ttk.Label(f_other_m, text="预设:").pack(side="left", pady=2)
         cb_preset_m = ttk.Combobox(f_other_m, textvariable=self.m_preset, values=["fast", "medium", "slow"], state="readonly", width=6)
-        cb_preset_m.grid(row=0, column=3, sticky="w", padx=(0, 8))
+        cb_preset_m.pack(side="left", padx=(0, 8))
 
-        ttk.Label(f_other_m, text="线程:").grid(row=1, column=0, sticky="w", pady=2)
-        cb_threads_m = ttk.Combobox(f_other_m, textvariable=self.m_threads_var, values=self.threads_options, state="readonly", width=6)
-        cb_threads_m.grid(row=1, column=1, sticky="w", padx=(0, 8))
+        ttk.Label(f_other_m, text="线程:").pack(side="left", pady=2)
+        cb_threads_m = ttk.Combobox(f_other_m, textvariable=self.m_threads_var, values=self.threads_options, state="readonly", width=4)
+        cb_threads_m.pack(side="left", padx=(0, 8))
+        
+        ttk.Label(f_other_m, text="音码:").pack(side="left", pady=2)
+        cb_audio_br_m = ttk.Combobox(f_other_m, textvariable=self.m_audio_bitrate_var, values=["128", "192", "256", "320"], width=4)
+        cb_audio_br_m.pack(side="left")
 
         self.update_m_res_ui() # 刷新合并选项卡分辨率UI
 
@@ -1459,6 +1493,44 @@ class FFmpegUltimateTool:
             if not a1_path and not a2_path and not s_path:
                 continue
 
+            # === 新增：ASS字体预检与拦截机制 ===
+            if s_path and is_ass:
+                required_fonts = set()
+                try:
+                    with open(s_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        # 1. 提取 [V4+ Styles] 中定义的字体
+                        for match in re.finditer(r"^Style:\s*[^,]+,\s*([^,]+)", content, re.MULTILINE):
+                            required_fonts.add(match.group(1).strip())
+                        # 2. 提取内联特效标签 \fn 定义的临时字体
+                        for match in re.finditer(r"\\fn([^\\}]+)", content):
+                            required_fonts.add(match.group(1).strip())
+                except Exception as e:
+                    print(f"解析 ASS 文件警告: {e}")
+                
+                if required_fonts:
+                    # 获取系统当前安装的所有字体 (转为小写用于忽略大小写比对)
+                    sys_fonts = [f.lower() for f in tkfont.families()]
+                    missing_fonts = []
+                    
+                    for font in required_fonts:
+                        # 去除竖排字体的前缀 @ 以及可能带有的引号
+                        check_font = font.lstrip('@').replace('"', '').replace("'", "")
+                        if check_font and check_font.lower() not in sys_fonts:
+                            missing_fonts.append(font)
+                    
+                    if missing_fonts:
+                        # 发现缺失字体，触发弹窗报错并终止处理队列
+                        err_msg = f"在准备合并视频 '{v_filename}' 时，\n"
+                        err_msg += f"检测到字幕 '{os.path.basename(s_path)}' 使用了系统未安装的字体：\n\n" 
+                        err_msg += "\n".join(missing_fonts)
+                        err_msg += "\n\n为防止字幕特效排版错乱，已安全停止渲染！\n请在电脑上安装上述字体后再次点击开始。"
+                        
+                        self.root.after(0, messagebox.showerror, "ASS字体缺失", err_msg)
+                        self.is_cancelled = True
+                        break # 中断并退出整个批量合并循环
+            # === 检查机制结束 ===
+
             processed_count += 1
             
             # 保持原格式处理
@@ -1637,12 +1709,14 @@ class FFmpegUltimateTool:
                 active_path = a1_path if has_a1 else (a2_path if has_a2 else "")
                 # 智能拦截：WAV/FLAC等无损格式直封入视频会导致严重的兼容性爆音(不支持的IPCM)
                 if active_path and active_path.lower().endswith(('.wav', '.flac', '.pcm')):
-                    cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                    audio_br = self.m_audio_bitrate_var.get().strip()
+                    cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
                 else:
                     cmd.extend(["-c:a", "copy"])
             elif num_ext_audio > 0 or (num_ext_audio == 0 and not s_path):
                 # 如果有多轨混合、有滤镜，或需要重新压缩防崩
-                cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                audio_br = self.m_audio_bitrate_var.get().strip()
+                cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
             else:
                 # 仅有视频+字幕，默认无损保留原视频音频
                 cmd.extend(["-c:a", "copy"])
@@ -1896,7 +1970,11 @@ class FFmpegUltimateTool:
 
         ttk.Label(frame_q_sm, text="线程:").pack(side="left")
         self.sm_cb_threads = ttk.Combobox(frame_q_sm, textvariable=self.sm_threads_var, values=self.threads_options, state="readonly", width=4)
-        self.sm_cb_threads.pack(side="left")
+        self.sm_cb_threads.pack(side="left", padx=(0, 8))
+
+        ttk.Label(frame_q_sm, text="音码:").pack(side="left")
+        self.sm_cb_audio_br = ttk.Combobox(frame_q_sm, textvariable=self.sm_audio_bitrate_var, values=["保持原始", "128", "192", "256", "320"], width=6)
+        self.sm_cb_audio_br.pack(side="left")
         # === 替换结束 ===
 
         # 5. 底部操作区
@@ -1947,6 +2025,7 @@ class FFmpegUltimateTool:
         self.sm_cb_fps.config(state=t_state_c)
         self.sm_cb_preset.config(state=t_state_c)
         self.sm_cb_threads.config(state=t_state_c)
+        self.sm_cb_audio_br.config(state=t_state_c) # 新增：勾选全部保留参数时，音码下拉框禁用
         self.update_sm_res_ui()
 
     def on_sm_prop_w_check(self):
@@ -2107,7 +2186,15 @@ class FFmpegUltimateTool:
         elif is_copy:
             cmd.extend(["-c:a", "copy"])
         else:
-            cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+            audio_br = self.sm_audio_bitrate_var.get().strip()
+            if audio_br == "保持原始":
+                orig_a_br = self.get_audio_stream_bitrate(in_file)
+                if orig_a_br:
+                    cmd.extend(["-c:a", "aac", "-b:a", orig_a_br])
+                else:
+                    cmd.extend(["-c:a", "aac", "-b:a", "192k"]) # 兜底
+            else:
+                cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
 
     def run_ffmpeg_sm(self, cmd, label):
         self.root.after(0, self.sm_status_text.set, f"正在处理: {label}")

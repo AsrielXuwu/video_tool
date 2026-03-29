@@ -12,9 +12,9 @@ jobs:
         os: [windows-latest, macos-latest]
         include:
           - os: windows-latest
-            artifact_name: ffmpeg-tool-windows
+            artifact_name: video-tool-windows
           - os: macos-latest
-            artifact_name: ffmpeg-tool-macos
+            artifact_name: video-tool-macos
 
     runs-on: ${{ matrix.os }}
 
@@ -55,13 +55,13 @@ jobs:
       if: matrix.os == 'windows-latest'
       run: |
         # 使用 --noconsole 对应 .pyw 的需求
-        pyinstaller --noconsole --onefile --name "VideoTool" ffmpeg_tool.pyw
+        pyinstaller --noconsole --onefile --name "VideoTool" video_tool.pyw
 
     - name: Build with PyInstaller (macOS)
       if: matrix.os == 'macos-latest'
       run: |
         # macOS 打包为 .app 
-        pyinstaller --windowed --name "VideoTool" ffmpeg_tool.pyw
+        pyinstaller --windowed --name "VideoTool" video_tool.pyw
 
     - name: Prepare Artifacts
       shell: bash

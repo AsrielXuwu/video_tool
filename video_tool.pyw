@@ -13,29 +13,29 @@ import json
 import pandas as pd
 
 # === 核心修改：动态获取外部 ffmpeg 文件夹路径 ===
+# === 核心修改：动态获取外部 ffmpeg 文件夹路径 ===
 def get_bin_path(filename):
     """
-    优先检查环境变量，其次探测本地打包目录，全面兼容 Windows 与 macOS。
+    优先检查环境变量，其次探测本地打包目录，完美兼容 Windows 与 macOS 应用程序包 (.app)。
     """
-    # 1. 跨平台处理：如果在 Windows 系统下且没带 .exe 后缀，则自动补全
     if sys.platform.startswith('win') and not filename.endswith('.exe'):
         filename += '.exe'
         
-    # 2. 优先级 1：检查系统环境变量 (若已配置环境变量，直接返回该指令名即可)
     env_path = shutil.which(filename)
     if env_path:
         return env_path
         
-    # 3. 优先级 2：环境变量未找到，推算本地目录
     if getattr(sys, 'frozen', False):
-        # PyInstaller 打包后，可执行文件通常在项目根目录的 dist 文件夹中 (如 dist/app.exe)
-        # sys.executable 的上级是 dist 目录，再上级才是项目根目录
-        base_path = os.path.dirname(os.path.dirname(sys.executable))
+        if sys.platform == 'darwin' and sys.executable.endswith('MacOS/video_tool'):
+            # 兼容 macOS 的 .app 应用程序包 (向上退 4 级回到 .app 同级目录)
+            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
+        else:
+            # 兼容 Windows 用户直接下载解压的情况 (exe 与 ffmpeg 文件夹同级)
+            base_path = os.path.dirname(sys.executable)
     else:
-        # 源码运行，取脚本同级目录
+        # 源码运行
         base_path = os.path.dirname(os.path.abspath(__file__))
     
-    # 拼接出相对路径: 根目录/ffmpeg/ffmpeg(.exe)
     return os.path.join(base_path, "ffmpeg", filename)
 
 # === 新增：智能检测系统 GPU 并分配最佳编码器 ===

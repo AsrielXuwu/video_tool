@@ -2,91 +2,88 @@ name: Cross-Platform Build
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ "main" ] # 当推送到 main 分支时自动触发
+  workflow_dispatch:     # 允许你在 GitHub 网页端手动点击按钮触发
 
 jobs:
   build:
+    name: Build on ${{ matrix.os_name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # 将 macOS 拆分为 Intel 和 ARM64 两个运行环境
-        os: [windows-latest, macos-13, macos-14]
         include:
+          # 1. Windows x64
           - os: windows-latest
-            artifact_name: video-tool-windows
+            os_name: windows-x64
+            artifact_name: VideoTool_Windows_x64
+          # 2. macOS x86_64 (Intel)
           - os: macos-13
-            artifact_name: video-tool-macos-intel
+            os_name: macos-intel
+            artifact_name: VideoTool_macOS_Intel
+          # 3. macOS ARM64 (Apple Silicon M1/M2/M3)
           - os: macos-14
-            artifact_name: video-tool-macos-arm64
-
-    runs-on: ${{ matrix.os }}
+            os_name: macos-arm64
+            artifact_name: VideoTool_macOS_AppleSilicon
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        cache: 'pip'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # 推荐使用 3.11，兼容性和稳定性极佳
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller pandas openpyxl
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pandas openpyxl
 
-    # 重点修正：针对 Windows、macOS Intel 和 macOS ARM64 分别下载对应的 FFmpeg
-    - name: Download and Setup FFmpeg
-      shell: bash
-      run: |
-        mkdir -p ffmpeg
-        if [[ "${{ matrix.os }}" == windows* ]]; then
-          # Windows: 从 BtbN 下载（包含 ffmpeg 和 ffprobe）
-          curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -o ffmpeg.zip
-          unzip -j ffmpeg.zip '**/bin/ffmpeg.exe' '**/bin/ffprobe.exe' -d ffmpeg/
-        elif [ "${{ matrix.os }}" == "macos-13" ]; then
-          # macOS Intel (x86_64): 从 Evermeet 分别下载
-          curl -L https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip -o ffmpeg_mac.zip
-          unzip -j ffmpeg_mac.zip -d ffmpeg/
-          curl -L https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip -o ffprobe_mac.zip
-          unzip -j ffprobe_mac.zip -d ffmpeg/
-          chmod +x ffmpeg/ffmpeg ffmpeg/ffprobe
-        elif [ "${{ matrix.os }}" == "macos-14" ]; then
-          # macOS Apple Silicon (ARM64): 从社区维护库下载原生 ARM64 静态编译版
-          curl -L https://github.com/Vargol/ffmpeg-apple-arm64-build/releases/download/7.0.1/ffmpeg-success.zip -o ffmpeg_mac.zip
-          # 使用 -j 忽略压缩包内的 bin/ 目录层级，直接提取二进制文件
-          unzip -j ffmpeg_mac.zip 'bin/ffmpeg' 'bin/ffprobe' -d ffmpeg/
-          chmod +x ffmpeg/ffmpeg ffmpeg/ffprobe
-        fi
+      # ================= 下载与配置 FFmpeg =================
+      - name: Download FFmpeg (Windows)
+        if: matrix.os_name == 'windows-x64'
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_temp
+          New-Item -ItemType Directory -Force -Path Release\ffmpeg
+          Move-Item -Path ffmpeg_temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe -Destination Release\ffmpeg\
+          Move-Item -Path ffmpeg_temp\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe -Destination Release\ffmpeg\
 
-    - name: Build with PyInstaller (Windows)
-      if: startsWith(matrix.os, 'windows')
-      run: |
-        pyinstaller --noconsole --onefile --name "VideoTool" video_tool.pyw
+      - name: Download FFmpeg (macOS Intel)
+        if: matrix.os_name == 'macos-intel'
+        run: |
+          mkdir -p Release/ffmpeg
+          curl -L -o ffmpeg.zip https://www.osxexperts.net/ffmpeg71intel.zip
+          curl -L -o ffprobe.zip https://www.osxexperts.net/ffprobe71intel.zip
+          unzip ffmpeg.zip -d Release/ffmpeg/
+          unzip ffprobe.zip -d Release/ffmpeg/
+          chmod +x Release/ffmpeg/ffmpeg Release/ffmpeg/ffprobe
 
-    - name: Build with PyInstaller (macOS)
-      if: startsWith(matrix.os, 'macos')
-      run: |
-        pyinstaller --windowed --name "VideoTool" video_tool.pyw
+      - name: Download FFmpeg (macOS ARM64)
+        if: matrix.os_name == 'macos-arm64'
+        run: |
+          mkdir -p Release/ffmpeg
+          curl -L -o ffmpeg.zip https://www.osxexperts.net/ffmpeg71arm.zip
+          curl -L -o ffprobe.zip https://www.osxexperts.net/ffprobe71arm.zip
+          unzip ffmpeg.zip -d Release/ffmpeg/
+          unzip ffprobe.zip -d Release/ffmpeg/
+          chmod +x Release/ffmpeg/ffmpeg Release/ffmpeg/ffprobe
 
-    - name: Prepare Artifacts
-      shell: bash
-      run: |
-        mkdir -p release_dist
-        
-        # 拷贝主程序
-        if [[ "${{ matrix.os }}" == windows* ]]; then
-          cp dist/VideoTool.exe release_dist/
-        else
-          cp -r dist/VideoTool.app release_dist/
-        fi
-        
-        # FFmpeg 的拷贝逻辑对所有平台一致，因此提取到判断外部
-        cp -r ffmpeg release_dist/
+      # ================= 编译打包可执行文件 =================
+      - name: Build Executable with PyInstaller
+        run: pyinstaller --noconsole --onefile video_tool.pyw
 
-    - name: Upload result
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.artifact_name }}
-        path: release_dist/
+      # ================= 整理产物并上传 =================
+      - name: Prepare Release Folder (Windows)
+        if: matrix.os_name == 'windows-x64'
+        run: Move-Item -Path dist\video_tool.exe -Destination Release\
+
+      - name: Prepare Release Folder (macOS)
+        if: startsWith(matrix.os_name, 'macos')
+        run: mv dist/video_tool.app Release/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: Release/

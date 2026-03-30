@@ -13,7 +13,6 @@ import json
 import pandas as pd
 
 # === 核心修改：动态获取外部 ffmpeg 文件夹路径 ===
-# === 核心修改：动态获取外部 ffmpeg 文件夹路径 ===
 def get_bin_path(filename):
     """
     优先检查环境变量，其次探测本地打包目录，完美兼容 Windows 与 macOS 应用程序包 (.app)。

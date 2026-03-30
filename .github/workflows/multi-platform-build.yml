@@ -9,12 +9,15 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, macos-latest]
+        # 将 macOS 拆分为 Intel 和 ARM64 两个运行环境
+        os: [windows-latest, macos-13, macos-14]
         include:
           - os: windows-latest
             artifact_name: video-tool-windows
-          - os: macos-latest
-            artifact_name: video-tool-macos
+          - os: macos-13
+            artifact_name: video-tool-macos-intel
+          - os: macos-14
+            artifact_name: video-tool-macos-arm64
 
     runs-on: ${{ matrix.os }}
 
@@ -33,48 +36,54 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller pandas openpyxl
 
-    # 重点修正：分平台下载并解压组件
+    # 重点修正：针对 Windows、macOS Intel 和 macOS ARM64 分别下载对应的 FFmpeg
     - name: Download and Setup FFmpeg
       shell: bash
       run: |
         mkdir -p ffmpeg
-        if [ "${{ matrix.os }}" == "windows-latest" ]; then
+        if [[ "${{ matrix.os }}" == windows* ]]; then
           # Windows: 从 BtbN 下载（包含 ffmpeg 和 ffprobe）
           curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -o ffmpeg.zip
           unzip -j ffmpeg.zip '**/bin/ffmpeg.exe' '**/bin/ffprobe.exe' -d ffmpeg/
-        else
-          # macOS: 从 Evermeet 分别下载 ffmpeg 和 ffprobe（因为它们不在同一个包里）
+        elif [ "${{ matrix.os }}" == "macos-13" ]; then
+          # macOS Intel (x86_64): 从 Evermeet 分别下载
           curl -L https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip -o ffmpeg_mac.zip
           unzip -j ffmpeg_mac.zip -d ffmpeg/
           curl -L https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip -o ffprobe_mac.zip
           unzip -j ffprobe_mac.zip -d ffmpeg/
           chmod +x ffmpeg/ffmpeg ffmpeg/ffprobe
+        elif [ "${{ matrix.os }}" == "macos-14" ]; then
+          # macOS Apple Silicon (ARM64): 从社区维护库下载原生 ARM64 静态编译版
+          curl -L https://github.com/Vargol/ffmpeg-apple-arm64-build/releases/download/7.0.1/ffmpeg-success.zip -o ffmpeg_mac.zip
+          # 使用 -j 忽略压缩包内的 bin/ 目录层级，直接提取二进制文件
+          unzip -j ffmpeg_mac.zip 'bin/ffmpeg' 'bin/ffprobe' -d ffmpeg/
+          chmod +x ffmpeg/ffmpeg ffmpeg/ffprobe
         fi
 
     - name: Build with PyInstaller (Windows)
-      if: matrix.os == 'windows-latest'
+      if: startsWith(matrix.os, 'windows')
       run: |
-        # 使用 --noconsole 对应 .pyw 的需求
         pyinstaller --noconsole --onefile --name "VideoTool" video_tool.pyw
 
     - name: Build with PyInstaller (macOS)
-      if: matrix.os == 'macos-latest'
+      if: startsWith(matrix.os, 'macos')
       run: |
-        # macOS 打包为 .app 
         pyinstaller --windowed --name "VideoTool" video_tool.pyw
 
     - name: Prepare Artifacts
       shell: bash
       run: |
         mkdir -p release_dist
-        if [ "${{ matrix.os }}" == "windows-latest" ]; then
+        
+        # 拷贝主程序
+        if [[ "${{ matrix.os }}" == windows* ]]; then
           cp dist/VideoTool.exe release_dist/
-          cp -r ffmpeg release_dist/
         else
-          # 保持 ffmpeg 文件夹与 .app 同级，符合代码 get_bin_path 逻辑
           cp -r dist/VideoTool.app release_dist/
-          cp -r ffmpeg release_dist/
         fi
+        
+        # FFmpeg 的拷贝逻辑对所有平台一致，因此提取到判断外部
+        cp -r ffmpeg release_dist/
 
     - name: Upload result
       uses: actions/upload-artifact@v4

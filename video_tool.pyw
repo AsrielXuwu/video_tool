@@ -165,6 +165,11 @@ class FFmpegUltimateTool:
         self.m_crf = tk.StringVar(value="28")
         self.m_audio_bitrate_var = tk.StringVar(value="320") # 新增: 默认 320kbps 高音质
         
+        # === 新增: 外部音频偏移与时间轴拉伸适应 ===
+        self.m_audio_offset = tk.StringVar(value="0") # 毫秒 (ms)，正数推后，负数提前
+        self.m_force_tempo = tk.BooleanVar(value=False)
+        self.m_force_crop = tk.BooleanVar(value=True) # 新增: 强制裁剪音频尾巴对齐视频
+        
         self.m_res_mode = tk.IntVar(value=1)
         self.m_prop_w_en = tk.BooleanVar(value=True) 
         self.m_prop_w = tk.StringVar(value="1920")
@@ -1196,14 +1201,25 @@ class FFmpegUltimateTool:
         
         ttk.Radiobutton(lf_left, text="保持原始音频流 (WAV/FLAC将自动转AAC防爆音)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 5))
         
-        ttk.Separator(lf_left, orient='horizontal').grid(row=5, column=0, columnspan=2, sticky="we", pady=5)
-        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=6, column=0, columnspan=2, sticky="w")
+        # === 新增：音频轨道偏移与拉伸适应 UI ===
+        f_time = ttk.Frame(lf_left)
+        f_time.grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(f_time, text="音频偏移(ms):").pack(side="left")
+        self.m_entry_offset = ttk.Entry(f_time, textvariable=self.m_audio_offset, width=5)
+        self.m_entry_offset.pack(side="left", padx=(2, 8))
+        self.m_cb_tempo = ttk.Checkbutton(f_time, text="拉伸自适应", variable=self.m_force_tempo, command=self.on_m_tempo_check)
+        self.m_cb_tempo.pack(side="left", padx=(0, 8))
+        self.m_cb_crop = ttk.Checkbutton(f_time, text="直接裁剪尾巴", variable=self.m_force_crop, command=self.on_m_crop_check)
+        self.m_cb_crop.pack(side="left")
+
+        ttk.Separator(lf_left, orient='horizontal').grid(row=6, column=0, columnspan=2, sticky="we", pady=5)
+        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=7, column=0, columnspan=2, sticky="w")
         
-        ttk.Label(lf_left, text="SRT字体:").grid(row=7, column=0, sticky="w", pady=2)
+        ttk.Label(lf_left, text="SRT字体:").grid(row=8, column=0, sticky="w", pady=2)
         
         # 将字体输入框改为组合选项 (加宽下拉框 + 浏览文件按钮)
         frame_font = ttk.Frame(lf_left)
-        frame_font.grid(row=7, column=1, sticky="w")
+        frame_font.grid(row=8, column=1, sticky="w")
         
         # 获取系统已安装的所有字体并排序
         font_families = list(tkfont.families())
@@ -1217,14 +1233,14 @@ class FFmpegUltimateTool:
         
         ttk.Button(frame_font, text="浏览...", width=6, command=self.browse_font).pack(side="left", padx=(5,0))
         
-        ttk.Label(lf_left, text="SRT大小:").grid(row=8, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=8, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT大小:").grid(row=9, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=9, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT描边:").grid(row=9, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=9, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT描边:").grid(row=10, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=10, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT边距:").grid(row=10, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=10, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT边距:").grid(row=11, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=11, column=1, sticky="w")
 
         # 初始化时触发一次以确认界面排他状态
         self.update_m_audio_ui()
@@ -1391,8 +1407,18 @@ class FFmpegUltimateTool:
             self.m_entry_exact_w.state(['!disabled'])
             self.m_entry_exact_h.state(['!disabled'])
 
+    def on_m_tempo_check(self):
+        if self.m_force_tempo.get():
+            self.m_force_crop.set(False)
+        self.update_m_audio_ui()
+
+    def on_m_crop_check(self):
+        if self.m_force_crop.get():
+            self.m_force_tempo.set(False)
+        self.update_m_audio_ui()
+
     def update_m_audio_ui(self, *args):
-        """互斥锁：控制手动音量下拉框的灰化禁用状态"""
+        """互斥锁：控制手动音量下拉框的灰化禁用状态，及偏移/拉伸的互斥"""
         mode = self.m_audio_mode.get()
         if mode == 1:
             self.m_cb_ovol.config(state="normal")
@@ -1403,6 +1429,16 @@ class FFmpegUltimateTool:
             self.m_cb_vvol.config(state="disabled")
             self.m_cb_bvol.config(state="disabled")
 
+        # 处理偏移、拉伸和裁剪选项与“保持原始(模式3)”的互斥
+        if mode == 3:
+            self.m_entry_offset.config(state="disabled")
+            self.m_cb_tempo.config(state="disabled")
+            self.m_cb_crop.config(state="disabled")
+        else:
+            self.m_entry_offset.config(state="normal")
+            self.m_cb_tempo.config(state="normal")
+            self.m_cb_crop.config(state="normal")
+    
     def browse_font(self):
         """选择外部自定义字体文件"""
         font_path = filedialog.askopenfilename(filetypes=[("字体文件", "*.ttf *.otf *.ttc")])
@@ -1659,16 +1695,54 @@ class FFmpegUltimateTool:
                 
             active_in_filter_count = int(has_a0_in_filter) + int(has_a1) + int(has_a2)
 
+            # === 新增：获取视频精准时长以严格限制输出，防止时长增加 ===
+            dur_v = self.get_video_duration(v_path)
+            
+            # === 新增：解析音频偏移与拉伸比例 ===
+            offset_val = 0
+            force_tempo = False
+            tempo_str = ""
+            
+            if mode != 3: # 选项3(无损)开启时自动忽略偏移与拉伸
+                try: offset_val = int(self.m_audio_offset.get().strip())
+                except: pass
+                force_tempo = self.m_force_tempo.get()
+                
+                # 若需要拉伸，通过 ffmpeg 的 atempo 级联滤镜计算速率
+                if force_tempo and dur_v > 0:
+                    dur_a = 0
+                    if has_a1: dur_a = self.get_video_duration(a1_path)
+                    elif has_a2: dur_a = self.get_video_duration(a2_path)
+                    
+                    if dur_a > 0:
+                        ratio = dur_a / dur_v # 速率比，大于1加速(压缩时间)，小于1减速(拉伸时间)
+                        atempos = []
+                        temp_r = ratio
+                        # atempo 单次极限是 0.5 到 2.0，超出需级联
+                        while temp_r > 2.0: 
+                            atempos.append("atempo=2.0")
+                            temp_r /= 2.0
+                        while temp_r < 0.5: 
+                            atempos.append("atempo=0.5")
+                            temp_r /= 0.5
+                        atempos.append(f"atempo={temp_r:.4f}")
+                        tempo_str = ",".join(atempos)
+
             if num_ext_audio > 0:
                 if active_in_filter_count == 1:
-                    # 只有一条外部音轨，且没有勾选保留原音轨混音
+                    # 只有一条外部音轨
                     idx = f"{v_idx}:a:0" if has_a1 else f"{b_idx}:a:0"
                     vol = vol_v if has_a1 else vol_b
                     
-                    if mode == 3: # 选项3: 保持原始单轨(无损拷贝)
+                    if mode == 3: # 无损直接映射
                         a_out = idx
-                    else: # 选项1或2: 降级为手动音量应用(取消loudnorm防止单轨过度放大产生底噪)
-                        fc_parts.append(f"[{idx}]volume={vol}[aout]")
+                    else:
+                        a_filter = f"[{idx}]volume={vol}"
+                        if offset_val > 0: a_filter += f",adelay={offset_val}|{offset_val}" # 推迟：延迟发声
+                        elif offset_val < 0: a_filter += f",atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS" # 提前：切掉头部
+                        if force_tempo and tempo_str: a_filter += f",{tempo_str}"
+                        
+                        fc_parts.append(f"{a_filter}[aout]")
                         a_out = "[aout]"
 
                 else: # active_in_filter_count >= 2
@@ -1677,20 +1751,28 @@ class FFmpegUltimateTool:
                         fc_parts.append(f"[0:a:0]volume={vol_o}[a0_vol]")
                         mix_inputs.append("[a0_vol]")
                     if has_a1:
-                        fc_parts.append(f"[{v_idx}:a:0]volume={vol_v}[a1_vol]")
+                        a1_filter = f"[{v_idx}:a:0]volume={vol_v}"
+                        if offset_val > 0: a1_filter += f",adelay={offset_val}|{offset_val}"
+                        elif offset_val < 0: a1_filter += f",atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS"
+                        if force_tempo and tempo_str: a1_filter += f",{tempo_str}"
+                        fc_parts.append(f"{a1_filter}[a1_vol]")
                         mix_inputs.append("[a1_vol]")
                     if has_a2:
-                        fc_parts.append(f"[{b_idx}:a:0]volume={vol_b}[a2_vol]")
+                        a2_filter = f"[{b_idx}:a:0]volume={vol_b}"
+                        if offset_val > 0: a2_filter += f",adelay={offset_val}|{offset_val}"
+                        elif offset_val < 0: a2_filter += f",atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS"
+                        if force_tempo and tempo_str: a2_filter += f",{tempo_str}"
+                        fc_parts.append(f"{a2_filter}[a2_vol]")
                         mix_inputs.append("[a2_vol]")
                         
                     mix_str = "".join(mix_inputs)
                     
-                    if mode == 2: # 自动 loudnorm 平衡
-                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest[amix]")
+                    if mode == 2: # 自动 loudnorm
+                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[amix]")
                         fc_parts.append(f"[amix]loudnorm[aout]")
                         a_out = "[aout]"
-                    else: # 手动音量混合 (即使选了选项3，对于多轨也智能回退到此模式)
-                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest[aout]")
+                    else: # 手动音量
+                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[aout]")
                         a_out = "[aout]"
 
             if fc_parts:
@@ -1753,6 +1835,9 @@ class FFmpegUltimateTool:
             else:
                 # 仅有视频+字幕，默认无损保留原视频音频
                 cmd.extend(["-c:a", "copy"])
+            # === 最强保险：利用 -t 参数严格强制视频在原始时长处停止，斩断因音频推后或超长产生的所有尾巴 ===
+            if dur_v > 0 and (self.m_force_crop.get() or self.m_force_tempo.get()):
+                cmd.extend(["-t", str(dur_v)])
                 
             cmd.append(out_file)
 

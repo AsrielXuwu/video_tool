@@ -38,7 +38,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller pandas openpyxl
-
       # ================= 下载与配置 FFmpeg =================
       - name: Download FFmpeg (Windows)
         if: matrix.os_name == 'windows-x64'
@@ -48,7 +47,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path Release\ffmpeg
           Move-Item -Path ffmpeg_temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe -Destination Release\ffmpeg\
           Move-Item -Path ffmpeg_temp\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe -Destination Release\ffmpeg\
-
       - name: Download FFmpeg (macOS Intel)
         if: matrix.os_name == 'macos-intel'
         run: |
@@ -58,7 +56,6 @@ jobs:
           unzip ffmpeg.zip -d Release/ffmpeg/
           unzip ffprobe.zip -d Release/ffmpeg/
           chmod +x Release/ffmpeg/ffmpeg Release/ffmpeg/ffprobe
-
       - name: Download FFmpeg (macOS ARM64)
         if: matrix.os_name == 'macos-arm64'
         run: |
@@ -68,7 +65,6 @@ jobs:
           unzip ffmpeg.zip -d Release/ffmpeg/
           unzip ffprobe.zip -d Release/ffmpeg/
           chmod +x Release/ffmpeg/ffmpeg Release/ffmpeg/ffprobe
-
       # ================= 编译打包可执行文件 =================
       - name: Build Executable with PyInstaller
         run: pyinstaller --noconsole --onefile video_tool.pyw

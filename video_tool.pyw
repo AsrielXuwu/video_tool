@@ -227,6 +227,7 @@ class FFmpegUltimateTool:
         self.sm_split_out1 = tk.StringVar()
         self.sm_split_out2 = tk.StringVar()
         self.sm_split_mode = tk.IntVar(value=2) # 1: 时间, 2: 百分比
+        self.sm_split_dir = tk.IntVar(value=1)  # 新增: 1为正序，2为倒序
         self.sm_split_time = tk.StringVar(value="00:00:00")
         self.sm_split_pct = tk.StringVar(value="50")
         
@@ -1939,8 +1940,16 @@ class FFmpegUltimateTool:
         ttk.Entry(self.frame_sm_split, textvariable=self.sm_split_out2).grid(row=2, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_split, text="浏览...", command=lambda: self.browse_dir(self.sm_split_out2)).grid(row=2, column=2)
 
+        # 新增：拆分计算方向选择
+        f_split_dir = ttk.Frame(self.frame_sm_split)
+        f_split_dir.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5,0))
+        ttk.Label(f_split_dir, text="计算方向:").pack(side="left", padx=(0, 5))
+        ttk.Radiobutton(f_split_dir, text="正序 (从头开始计算)", variable=self.sm_split_dir, value=1).pack(side="left", padx=(0, 15))
+        ttk.Radiobutton(f_split_dir, text="倒序 (从尾部往前推算)", variable=self.sm_split_dir, value=2).pack(side="left")
+
+        # 原有的时间/百分比选择（下移到了 row=4）
         f_split_mode = ttk.Frame(self.frame_sm_split)
-        f_split_mode.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5,0))
+        f_split_mode.grid(row=4, column=0, columnspan=3, sticky="w", pady=(5,0))
         ttk.Radiobutton(f_split_mode, text="按时间节点拆分 (HH:MM:SS):", variable=self.sm_split_mode, value=1, command=self.update_sm_ui_state).pack(side="left")
         self.entry_sm_time = ttk.Entry(f_split_mode, textvariable=self.sm_split_time, width=10)
         self.entry_sm_time.pack(side="left", padx=(0, 20))
@@ -2328,7 +2337,12 @@ class FFmpegUltimateTool:
                     else:
                         pct = float(self.sm_split_pct.get()) / 100.0
                         split_sec = dur * pct
+                    
+                    # === 核心逻辑：若是倒序，从总时长中减去设定时间 ===
+                    if self.sm_split_dir.get() == 2:
+                        split_sec = dur - split_sec
                         
+                    # 严密防呆：如果视频比倒扣的时间还短，或者解析出负数，则安全跳过不报错
                     if split_sec <= 0 or dur <= 0 or split_sec >= dur: continue
                     out_ext = ext if is_copy or out_fmt == "保持原格式" else "." + out_fmt.lower()
                     

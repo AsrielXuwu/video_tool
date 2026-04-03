@@ -49,7 +49,7 @@ def auto_detect_gpu():
         return "Apple (VideoToolbox)"
     elif sys.platform.startswith('win'):
         gpus = []
-        # 引擎 1：现代 Windows 11 首选 PowerShell 探测 (解决 wmic 被系统移除的问题)
+        # 引擎 1：现代 Windows 11 首选 PowerShell 探测
         try:
             ps_cmd = 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'
             result = subprocess.check_output(

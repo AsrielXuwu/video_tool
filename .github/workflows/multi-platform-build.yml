@@ -1,9 +1,10 @@
-name: Cross-Platform Build
+name: Cross-Platform Build and Release
 
 on:
   push:
-    branches: [ "main" ] # 当推送到 main 分支时自动触发
-  workflow_dispatch:     # 允许你在 GitHub 网页端手动点击按钮触发
+    branches: [ "main" ]
+    tags: [ "v*.*.*" ]     # 推荐：推送 tag 时触发自动发布
+  workflow_dispatch:       # 允许手动触发
 
 jobs:
   build:
@@ -32,12 +33,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # 推荐使用 3.11，兼容性和稳定性极佳
+          python-version: '3.11'
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller pandas openpyxl
+
       # ================= 下载与配置 FFmpeg =================
       - name: Download FFmpeg (Windows)
         if: matrix.os_name == 'windows-x64'
@@ -47,6 +49,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path Release\ffmpeg
           Move-Item -Path ffmpeg_temp\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe -Destination Release\ffmpeg\
           Move-Item -Path ffmpeg_temp\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe -Destination Release\ffmpeg\
+
       - name: Download FFmpeg (macOS Intel)
         if: matrix.os_name == 'macos-intel'
         run: |
@@ -56,6 +59,7 @@ jobs:
           unzip ffmpeg.zip -d Release/ffmpeg/
           unzip ffprobe.zip -d Release/ffmpeg/
           chmod +x Release/ffmpeg/ffmpeg Release/ffmpeg/ffprobe
+
       - name: Download FFmpeg (macOS ARM64)
         if: matrix.os_name == 'macos-arm64'
         run: |
@@ -65,21 +69,54 @@ jobs:
           unzip ffmpeg.zip -d Release/ffmpeg/
           unzip ffprobe.zip -d Release/ffmpeg/
           chmod +x Release/ffmpeg/ffmpeg Release/ffmpeg/ffprobe
+
       # ================= 编译打包可执行文件 =================
       - name: Build Executable with PyInstaller
         run: pyinstaller --noconsole --onefile video_tool.pyw
 
-      # ================= 整理产物并上传 =================
-      - name: Prepare Release Folder (Windows)
+      # ================= 整理产物并压缩成 Zip =================
+      - name: Prepare and Zip Release Folder (Windows)
         if: matrix.os_name == 'windows-x64'
-        run: Move-Item -Path dist\video_tool.exe -Destination Release\
+        run: |
+          Move-Item -Path dist\video_tool.exe -Destination Release\
+          # 使用 PowerShell 将 Release 文件夹内的内容打包
+          Compress-Archive -Path Release\* -DestinationPath ${{ matrix.artifact_name }}.zip
 
-      - name: Prepare Release Folder (macOS)
+      - name: Prepare and Zip Release Folder (macOS)
         if: startsWith(matrix.os_name, 'macos')
-        run: mv dist/video_tool.app Release/
+        run: |
+          mv dist/video_tool.app Release/
+          # 进入 Release 文件夹打包，确保解压后直接是 app 和 ffmpeg 文件夹，而不是多套一层 Release 目录
+          cd Release
+          zip -r ../${{ matrix.artifact_name }}.zip ./*
+          cd ..
 
-      - name: Upload Artifact
+      - name: Upload Artifact to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: Release/
+          name: raw-${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.zip # 直接上传压缩包
+
+  # ================= 汇总并发布到 Release =================
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: raw-*
+          path: final-artifacts
+          merge-multiple: true
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: final-artifacts/*.zip
+          generate_release_notes: true
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest-build' }}

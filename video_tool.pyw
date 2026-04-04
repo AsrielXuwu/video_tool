@@ -1172,15 +1172,22 @@ class FFmpegUltimateTool:
         self.m_cb_bvol = ttk.Combobox(frame_vols, textvariable=self.m_bgm_vol, values=["200%", "150%", "125%","100%", "80%", "70%","65%", "0% (静音)"], width=7)
         self.m_cb_bvol.pack(side="left")
 
-        chk_keep = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨 (混音)", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
+        chk_keep = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
         chk_keep.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 2))
 
-        ttk.Radiobutton(lf_left, text="混合后整体平衡 (loudnorm，保留相对比例)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
         
-        # === 新增：专业级分轨混音选项 ===
-        ttk.Radiobutton(lf_left, text="独立标准化各音轨后混合(手动音量设置仍有效)", variable=self.m_audio_mode, value=4, command=self.update_m_audio_ui).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
+        # === 新增：方案一 (独立标准化+按比例混合) 及 绝对标准自定义 ===
+        f_mode4 = ttk.Frame(lf_left)
+        f_mode4.grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Radiobutton(f_mode4, text="独立标准化各音轨后再混合", variable=self.m_audio_mode, value=4, command=self.update_m_audio_ui).pack(side="left")
         
-        ttk.Radiobutton(lf_left, text="保持原始音频流", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 5))
+        ttk.Label(f_mode4, text=" 目标标准(LUFS):").pack(side="left", padx=(10, 2))
+        self.m_target_lufs = tk.StringVar(value="-24.0") # EBU R128 国际广播标准默认为 -24
+        self.m_spin_lufs = ttk.Spinbox(f_mode4, from_=-70.0, to=-5.0, increment=1.0, textvariable=self.m_target_lufs, width=6)
+        self.m_spin_lufs.pack(side="left")
+
+        ttk.Radiobutton(lf_left, text="保持原始音频流(单轨使用)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 5))
         
         # === 音频轨道偏移与拉伸适应 UI ===
         f_time = ttk.Frame(lf_left)
@@ -1396,9 +1403,9 @@ class FFmpegUltimateTool:
         """互斥锁：控制手动音量下拉框的灰化禁用状态，及偏移/拉伸的互斥"""
         mode = self.m_audio_mode.get()
         
-        # 核心修改：模式 1(纯手工混音) 和 模式 4(单轨独立平衡后混音) 需要点亮音量控制框
+        # 核心修改：模式 1 和 模式 4 都需要点亮音量控制框！
         if mode == 1 or mode == 4:
-            # === 新增逻辑：原声音轨必须在勾选“保留”后才允许调节音量 ===
+            # 原声音轨必须在勾选“保留”后才允许调节音量
             if self.m_keep_orig_audio.get():
                 self.m_cb_ovol.config(state="normal")
             else:
@@ -1411,6 +1418,13 @@ class FFmpegUltimateTool:
             self.m_cb_vvol.config(state="disabled")
             self.m_cb_bvol.config(state="disabled")
 
+        # 核心修改：控制目标响度LUFS输入框的互斥
+        if hasattr(self, 'm_spin_lufs'):
+            if mode == 4:
+                self.m_spin_lufs.config(state="normal")
+            else:
+                self.m_spin_lufs.config(state="disabled")
+
         # 处理偏移、拉伸和裁剪选项与“保持原始(模式3)”的互斥
         if mode == 3:
             self.m_entry_offset.config(state="disabled")
@@ -1420,7 +1434,7 @@ class FFmpegUltimateTool:
             self.m_entry_offset.config(state="normal")
             self.m_cb_tempo.config(state="normal")
             self.m_cb_crop.config(state="normal")
-    
+
     def browse_font(self):
         """选择外部自定义字体文件"""
         font_path = filedialog.askopenfilename(filetypes=[("字体文件", "*.ttf *.otf *.ttc")])
@@ -1480,6 +1494,45 @@ class FFmpegUltimateTool:
             return
 
         total_files = len(video_files)
+        
+        # === 新增：全局 ASS 字体秒扫预检机制 ===
+        if s_dir and os.path.exists(s_dir):
+            self.root.after(0, self.m_status_text.set, "正在全局预检 ASS 字体完整性...")
+            global_missing_fonts = set()
+            sys_fonts = [f.lower() for f in tkfont.families()]
+            
+            for v_filename in video_files:
+                base_name = os.path.splitext(v_filename)[0]
+                s_path_check = os.path.join(s_dir, base_name + '.ass')
+                if os.path.exists(s_path_check):
+                    try:
+                        with open(s_path_check, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            # 提取样式表字体
+                            for match in re.finditer(r"^Style:\s*[^,]+,\s*([^,]+)", content, re.MULTILINE):
+                                font = match.group(1).strip()
+                                check_font = font.lstrip('@').replace('"', '').replace("'", "")
+                                if check_font and check_font.lower() not in sys_fonts:
+                                    global_missing_fonts.add(font)
+                            # 提取内联特效字体
+                            for match in re.finditer(r"\\fn([^\\}]+)", content):
+                                font = match.group(1).strip()
+                                check_font = font.lstrip('@').replace('"', '').replace("'", "")
+                                if check_font and check_font.lower() not in sys_fonts:
+                                    global_missing_fonts.add(font)
+                    except Exception as e:
+                        print(f"预检 ASS 警告: {e}")
+            
+            if global_missing_fonts:
+                err_msg = "在正式开始处理前，检测到以下 ASS 字幕使用了系统未安装的字体：\n\n"
+                err_msg += "\n".join(list(global_missing_fonts))
+                err_msg += "\n\n为防止字幕特效排版错乱，已安全中止任务！\n请在电脑上安装上述字体后，再次点击开始。"
+                
+                self.root.after(0, messagebox.showerror, "ASS字体缺失 (全局预检拦截)", err_msg)
+                self.root.after(0, self.merge_reset_ui, "因字体缺失，合并任务已取消。")
+                return # 预检不通过，直接退出，绝对不生成垃圾文件
+        # === 全局预检结束 ===
+
         processed_count = 0
 
         actual_out_dir = out_dir
@@ -1559,44 +1612,6 @@ class FFmpegUltimateTool:
             # 至少有音频或字幕再处理，否则原封不动输出意义不大
             if not a1_path and not a2_path and not s_path:
                 continue
-
-            # === 新增：ASS字体预检与拦截机制 ===
-            if s_path and is_ass:
-                required_fonts = set()
-                try:
-                    with open(s_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                        # 1. 提取 [V4+ Styles] 中定义的字体
-                        for match in re.finditer(r"^Style:\s*[^,]+,\s*([^,]+)", content, re.MULTILINE):
-                            required_fonts.add(match.group(1).strip())
-                        # 2. 提取内联特效标签 \fn 定义的临时字体
-                        for match in re.finditer(r"\\fn([^\\}]+)", content):
-                            required_fonts.add(match.group(1).strip())
-                except Exception as e:
-                    print(f"解析 ASS 文件警告: {e}")
-                
-                if required_fonts:
-                    # 获取系统当前安装的所有字体 (转为小写用于忽略大小写比对)
-                    sys_fonts = [f.lower() for f in tkfont.families()]
-                    missing_fonts = []
-                    
-                    for font in required_fonts:
-                        # 去除竖排字体的前缀 @ 以及可能带有的引号
-                        check_font = font.lstrip('@').replace('"', '').replace("'", "")
-                        if check_font and check_font.lower() not in sys_fonts:
-                            missing_fonts.append(font)
-                    
-                    if missing_fonts:
-                        # 发现缺失字体，触发弹窗报错并终止处理队列
-                        err_msg = f"在准备合并视频 '{v_filename}' 时，\n"
-                        err_msg += f"检测到字幕 '{os.path.basename(s_path)}' 使用了系统未安装的字体：\n\n" 
-                        err_msg += "\n".join(missing_fonts)
-                        err_msg += "\n\n为防止字幕特效排版错乱，已安全停止渲染！\n请在电脑上安装上述字体后再次点击开始。"
-                        
-                        self.root.after(0, messagebox.showerror, "ASS字体缺失", err_msg)
-                        self.is_cancelled = True
-                        break # 中断并退出整个批量合并循环
-            # === 检查机制结束 ===
 
             processed_count += 1
             
@@ -1747,6 +1762,10 @@ class FFmpegUltimateTool:
                         tempo_str = ",".join(atempos)
 
             if num_ext_audio > 0:
+                # === 获取用户设定的目标 LUFS 标准 (默认 -24.0 广播标准) ===
+                try: target_lufs = float(self.m_target_lufs.get())
+                except: target_lufs = -24.0
+
                 if active_in_filter_count == 1:
                     # 只有一条外部音轨
                     idx = f"{v_idx}:a:0" if has_a1 else f"{b_idx}:a:0"
@@ -1756,14 +1775,14 @@ class FFmpegUltimateTool:
                         a_out = idx
                     else:
                         a_chain = []
-                        # 模式 4：率先在源头切入独立标准化
-                        if mode == 4: a_chain.append("loudnorm") 
+                        # 方案一：率先在源头切入独立标准化，带上设定的绝对标准 LUFS
+                        if mode == 4: a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
+                        
                         a_chain.append(f"volume={vol}")
                         if offset_val > 0: a_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
                         if force_tempo and tempo_str: a_chain.append(tempo_str)
                         
-                        # 修复一个原先的漏洞：如果只合并单条音轨，模式2原本没有挂载 loudnorm，这里补上
                         if mode == 2: a_chain.append("loudnorm") 
                         
                         a_filter = ",".join(a_chain)
@@ -1772,17 +1791,17 @@ class FFmpegUltimateTool:
 
                 else: # active_in_filter_count >= 2
                     mix_inputs = []
-                    # 【核心修改：为每一条音轨建立独立的“标准化 -> 缩放 -> 偏移拉伸”微型加工流水线】
+                    # 【核心修改：为每一条音轨建立独立的“标准化(指定LUFS) -> 对数百分比缩放 -> 偏移拉伸”微型加工流水线】
                     if has_a0_in_filter:
                         a0_chain = []
-                        if mode == 4: a0_chain.append("loudnorm") # 提前进行独立标准化
+                        if mode == 4: a0_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         a0_chain.append(f"volume={vol_o}")
                         fc_parts.append(f"[0:a:0]{','.join(a0_chain)}[a0_vol]")
                         mix_inputs.append("[a0_vol]")
                         
                     if has_a1:
                         a1_chain = []
-                        if mode == 4: a1_chain.append("loudnorm") # 提前进行独立标准化
+                        if mode == 4: a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         a1_chain.append(f"volume={vol_v}")
                         if offset_val > 0: a1_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a1_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
@@ -1792,7 +1811,7 @@ class FFmpegUltimateTool:
                         
                     if has_a2:
                         a2_chain = []
-                        if mode == 4: a2_chain.append("loudnorm") # 提前进行独立标准化
+                        if mode == 4: a2_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         a2_chain.append(f"volume={vol_b}")
                         if offset_val > 0: a2_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a2_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
@@ -1802,18 +1821,12 @@ class FFmpegUltimateTool:
                         
                     mix_str = "".join(mix_inputs)
                     
-                    if mode == 2: # 自动 loudnorm (先混合再平衡)
+                    if mode == 2: # 自动 loudnorm (先混合所有声音，再对整体进行防爆音平衡)
                         fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[amix]")
                         fc_parts.append(f"[amix]loudnorm[aout]")
                         a_out = "[aout]"
-                    else: # 模式 1 (纯手工) 或 模式 4 (单轨独立平衡后再混合) 
-                        # 因为前面已经做过标准化和缩放，这里只需原样纯净混合即可
-                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[aout]")
-                        a_out = "[aout]"
-
-            # -- 视频编码逻辑 --
-            else: # 模式 1 (纯手工) 或 模式 4 (单轨独立平衡后再混合) 
-                        # 因为前面已经做过标准化和缩放，这里只需原样纯净混合即可
+                    else: # 模式 1 (纯手工) 或 模式 4 (单轨独立平衡后缩放)
+                        # 因为前面已经做过标准化和按百分比的对数缩放，这里只需原样纯净混合即可
                         fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[aout]")
                         a_out = "[aout]"
 

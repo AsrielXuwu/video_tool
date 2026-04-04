@@ -1525,6 +1525,11 @@ class FFmpegUltimateTool:
                     if os.path.exists(temp):
                         a1_path = temp
                         break
+                # === 补回：如果找不到同名文件，但目录下只有1个音频，则作为全局通用音频 ===
+                if not a1_path:
+                    a1_files = [f for f in os.listdir(a_dir1) if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']]
+                    if len(a1_files) == 1:
+                        a1_path = os.path.join(a_dir1, a1_files[0])
                         
             # 智能匹配BGM
             a2_path = None
@@ -1534,6 +1539,11 @@ class FFmpegUltimateTool:
                     if os.path.exists(temp):
                         a2_path = temp
                         break
+                # === 补回：如果找不到同名文件，但目录下只有1个音频，则作为全局通用音频 ===
+                if not a2_path:
+                    a2_files = [f for f in os.listdir(a_dir2) if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']]
+                    if len(a2_files) == 1:
+                        a2_path = os.path.join(a_dir2, a2_files[0])
 
             # 智能匹配字幕
             s_path = None
@@ -1616,7 +1626,11 @@ class FFmpegUltimateTool:
 
             fc_parts = []
             v_out = "0:v:0?"
-            a_out = "0:a:0?"
+            # === 核心修复：严格遵照勾选框决定原声去留 ===
+            if self.m_keep_orig_audio.get():
+                a_out = "0:a:0?"
+            else:
+                a_out = ""  # 只要没勾选，默认剥离/静音原声
 
             # -- 智能分辨率缩放 --
             scale_filter = ""
@@ -1798,6 +1812,22 @@ class FFmpegUltimateTool:
                         a_out = "[aout]"
 
             # -- 视频编码逻辑 --
+            else: # 模式 1 (纯手工) 或 模式 4 (单轨独立平衡后再混合) 
+                        # 因为前面已经做过标准化和缩放，这里只需原样纯净混合即可
+                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[aout]")
+                        a_out = "[aout]"
+
+            # === 最核心的修复：把误删的流映射与滤镜挂载代码补回来！ ===
+            if fc_parts:
+                cmd.extend(["-filter_complex", ";".join(fc_parts)])
+                cmd.extend(["-map", v_out])
+                if a_out: cmd.extend(["-map", a_out]) # 只有包含有效音频流时才映射
+            else:
+                # 没有任何滤镜介入，直接以原生流输入防报错
+                cmd.extend(["-map", "0:v:0?"])
+                if a_out: cmd.extend(["-map", a_out])
+
+            # -- 视频编码逻辑 --
             cmd.extend(["-c:v", encoder])
             if encoder != "copy":
                 if self.m_quality_mode.get() == 1:
@@ -1834,7 +1864,9 @@ class FFmpegUltimateTool:
                     cmd.extend(["-threads", threads_val])
             
             # -- 音频编码策略逻辑 --
-            if active_in_filter_count == 1 and mode == 3:
+            if not a_out:
+                pass # 如果没有输出音频（a_out为空），则彻底跳过音频编码参数配置
+            elif active_in_filter_count == 1 and mode == 3:
                 # 只有单条独立音轨，且选择了保持原始拷贝
                 active_path = a1_path if has_a1 else (a2_path if has_a2 else "")
                 # 智能拦截：WAV/FLAC等无损格式直封入视频会导致严重的兼容性爆音(不支持的IPCM)

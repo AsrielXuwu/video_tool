@@ -1130,7 +1130,7 @@ class FFmpegUltimateTool:
         
         self.m_orig_vol = tk.StringVar(value="100%")
         self.m_voice_vol = tk.StringVar(value="100%")
-        self.m_bgm_vol = tk.StringVar(value="30%")
+        self.m_bgm_vol = tk.StringVar(value="35%")
         
         self.m_keep_orig_audio = tk.BooleanVar(value=False)
         
@@ -1204,7 +1204,7 @@ class FFmpegUltimateTool:
         ttk.Radiobutton(f_mode4, text="独立标准化各音轨后再混合", variable=self.m_audio_mode, value=4, command=self.update_m_audio_ui).pack(side="left")
         
         ttk.Label(f_mode4, text=" 目标标准(LUFS):").pack(side="left", padx=(10, 2))
-        self.m_target_lufs = tk.StringVar(value="-24.0") # EBU R128 国际广播标准默认为 -24
+        self.m_target_lufs = tk.StringVar(value="-12.0") # EBU R128 国际广播标准默认为 -24
         self.m_spin_lufs = ttk.Spinbox(f_mode4, from_=-70.0, to=-5.0, increment=1.0, textvariable=self.m_target_lufs, width=6)
         self.m_spin_lufs.pack(side="left")
 

@@ -135,6 +135,7 @@ class FFmpegUltimateTool:
 
         self.quality_mode = tk.IntVar(value=2)
         self.bitrate = tk.StringVar(value="3000")
+        self.max_bitrate = tk.StringVar(value="3000") # 新增: 批量处理限流上限
         self.crf = tk.StringVar(value="28")
         self.preset = tk.StringVar(value="medium")
         self.copy_audio = tk.BooleanVar(value=True)
@@ -162,6 +163,7 @@ class FFmpegUltimateTool:
         self.m_encoder_var = tk.StringVar(value=default_encoder)
         self.m_quality_mode = tk.IntVar(value=2)
         self.m_bitrate = tk.StringVar(value="3000")
+        self.m_max_bitrate = tk.StringVar(value="3000") # 新增: 合并界面限流上限
         self.m_crf = tk.StringVar(value="28")
         self.m_audio_bitrate_var = tk.StringVar(value="320") # 新增: 默认 320kbps 高音质
         
@@ -243,6 +245,7 @@ class FFmpegUltimateTool:
         self.sm_encoder_var = tk.StringVar(value=default_encoder)
         self.sm_quality_mode = tk.IntVar(value=2)
         self.sm_bitrate = tk.StringVar(value="3000")
+        self.sm_max_bitrate = tk.StringVar(value="3000") # 新增: 拆分合并限流上限
         self.sm_crf = tk.StringVar(value="28")
         self.sm_audio_bitrate_var = tk.StringVar(value="320") # 新增: 默认 320kbps 高音质
         
@@ -330,31 +333,36 @@ class FFmpegUltimateTool:
         ttk.Radiobutton(lf_other, text="平均码率(kbps):", variable=self.quality_mode, value=1).grid(row=0, column=0, sticky="w")
         ttk.Entry(lf_other, textvariable=self.bitrate, width=8).grid(row=0, column=1)
 
-        ttk.Radiobutton(lf_other, text="动态质量(推荐28):", variable=self.quality_mode, value=2).grid(row=1, column=0, sticky="w", pady=(5,0))
-        ttk.Entry(lf_other, textvariable=self.crf, width=8).grid(row=1, column=1, sticky="w", pady=(5,0))
+        # 新增的智能限流选项
+        ttk.Radiobutton(lf_other, text="智能限流(上限kbps):", variable=self.quality_mode, value=4).grid(row=1, column=0, sticky="w", pady=(5,0))
+        ttk.Entry(lf_other, textvariable=self.max_bitrate, width=8).grid(row=1, column=1, sticky="w", pady=(5,0))
 
-        ttk.Radiobutton(lf_other, text="保持原视频流码率", variable=self.quality_mode, value=3).grid(row=2, column=0, columnspan=2, sticky="w", pady=(5,0))
+        # 后面的行号整体 +1
+        ttk.Radiobutton(lf_other, text="动态质量(推荐28):", variable=self.quality_mode, value=2).grid(row=2, column=0, sticky="w", pady=(5,0))
+        ttk.Entry(lf_other, textvariable=self.crf, width=8).grid(row=2, column=1, sticky="w", pady=(5,0))
 
-        ttk.Label(lf_other, text="视频帧率(FPS):").grid(row=3, column=0, sticky="w", pady=(10,0))
+        ttk.Radiobutton(lf_other, text="保持原视频流码率", variable=self.quality_mode, value=3).grid(row=3, column=0, columnspan=2, sticky="w", pady=(5,0))
+
+        ttk.Label(lf_other, text="视频帧率(FPS):").grid(row=4, column=0, sticky="w", pady=(10,0))
         cb_fps = ttk.Combobox(lf_other, textvariable=self.fps_var, values=self.fps_options, width=8, state="readonly")
-        cb_fps.grid(row=3, column=1, pady=(10,0))
+        cb_fps.grid(row=4, column=1, pady=(10,0))
 
-        ttk.Label(lf_other, text="编码预设:").grid(row=4, column=0, sticky="w", pady=(10,0))
+        ttk.Label(lf_other, text="编码预设:").grid(row=5, column=0, sticky="w", pady=(10,0))
         cb_preset = ttk.Combobox(lf_other, textvariable=self.preset, values=["fast", "medium", "slow"], width=8, state="readonly")
-        cb_preset.grid(row=4, column=1, pady=(10,0))
+        cb_preset.grid(row=5, column=1, pady=(10,0))
 
-        ttk.Label(lf_other, text="线程数:").grid(row=5, column=0, sticky="w", pady=(10,0))
+        ttk.Label(lf_other, text="线程数:").grid(row=6, column=0, sticky="w", pady=(10,0))
         cb_threads = ttk.Combobox(lf_other, textvariable=self.threads_var, values=self.threads_options, width=8, state="readonly")
-        cb_threads.grid(row=5, column=1, pady=(10,0))
+        cb_threads.grid(row=6, column=1, pady=(10,0))
 
-        ttk.Label(lf_other, text="音频码率:").grid(row=6, column=0, sticky="w", pady=(10,0))
+        ttk.Label(lf_other, text="音频码率:").grid(row=7, column=0, sticky="w", pady=(10,0))
         cb_audio_br = ttk.Combobox(lf_other, textvariable=self.audio_bitrate_var, values=["保持原始", "128", "192", "256", "320"], width=8)
-        cb_audio_br.grid(row=6, column=1, pady=(10,0))
+        cb_audio_br.grid(row=7, column=1, pady=(10,0))
 
-        ttk.Separator(lf_other, orient='horizontal').grid(row=7, column=0, columnspan=2, sticky="we", pady=10)
-        ttk.Checkbutton(lf_other, text="保留原音频 (无损极速)", variable=self.copy_audio).grid(row=8, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(lf_other, text="Web优化 (边下边播)", variable=self.faststart).grid(row=9, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(lf_other, text="强制音画同步 (防时长微调)", variable=self.force_sync).grid(row=10, column=0, columnspan=2, sticky="w")
+        ttk.Separator(lf_other, orient='horizontal').grid(row=8, column=0, columnspan=2, sticky="we", pady=10)
+        ttk.Checkbutton(lf_other, text="保留原音频 (无损极速)", variable=self.copy_audio).grid(row=9, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(lf_other, text="Web优化 (边下边播)", variable=self.faststart).grid(row=10, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(lf_other, text="强制音画同步 (防时长微调)", variable=self.force_sync).grid(row=11, column=0, columnspan=2, sticky="w")
 
         # === 替换为新的底部紧凑操作区 (同行布局) ===
         frame_bottom = ttk.Frame(self.tab_process, padding=(10, 10))
@@ -784,6 +792,19 @@ class FFmpegUltimateTool:
                         cmd.extend(["-b:v", orig_v_bitrate])
                     else:
                         cmd.extend(["-crf", "28"]) # 提取失败则回退默认
+                elif self.quality_mode.get() == 4:
+                    # === 智能限流核心逻辑 ===
+                    try: target_br = int(self.max_bitrate.get())
+                    except: target_br = 3000
+                    orig_v_bitrate = self.get_video_stream_bitrate(in_file)
+                    if orig_v_bitrate:
+                        orig_br_kbps = int(orig_v_bitrate) // 1000
+                        if orig_br_kbps > target_br:
+                            cmd.extend(["-b:v", f"{target_br}k"]) # 大于目标，截断为上限
+                        else:
+                            cmd.extend(["-b:v", orig_v_bitrate])  # 小于目标，保持原状
+                    else:
+                        cmd.extend(["-b:v", f"{target_br}k"])
                 
                 preset_val = self.preset.get()
                 if encoder == "h264_amf":
@@ -1286,13 +1307,15 @@ class FFmpegUltimateTool:
         frame_q_m.grid(row=5, column=0, columnspan=2, sticky="we", pady=2)
 
         ttk.Radiobutton(frame_q_m, text="固定:", variable=self.m_quality_mode, value=1).grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame_q_m, textvariable=self.m_bitrate, width=6).grid(row=0, column=1, sticky="w", padx=(0, 5))
+        ttk.Entry(frame_q_m, textvariable=self.m_bitrate, width=5).grid(row=0, column=1, sticky="w", padx=(0, 2))
 
-        ttk.Radiobutton(frame_q_m, text="CRF:", variable=self.m_quality_mode, value=2).grid(row=0, column=2, sticky="w")
-        ttk.Entry(frame_q_m, textvariable=self.m_crf, width=4).grid(row=0, column=3, sticky="w", padx=(0, 5))
+        ttk.Radiobutton(frame_q_m, text="上限:", variable=self.m_quality_mode, value=4).grid(row=0, column=2, sticky="w")
+        ttk.Entry(frame_q_m, textvariable=self.m_max_bitrate, width=5).grid(row=0, column=3, sticky="w", padx=(0, 2))
 
-        ttk.Radiobutton(frame_q_m, text="保原码率", variable=self.m_quality_mode, value=3).grid(row=0, column=4, sticky="w")
+        ttk.Radiobutton(frame_q_m, text="CRF:", variable=self.m_quality_mode, value=2).grid(row=0, column=4, sticky="w")
+        ttk.Entry(frame_q_m, textvariable=self.m_crf, width=3).grid(row=0, column=5, sticky="w", padx=(0, 2))
 
+        ttk.Radiobutton(frame_q_m, text="保原码率", variable=self.m_quality_mode, value=3).grid(row=0, column=6, sticky="w")
         # 视频帧率、预设、线程、音码 (极限单行横向排布)
         f_other_m = ttk.Frame(lf_right)
         f_other_m.grid(row=6, column=0, columnspan=2, sticky="we", pady=(5, 0))
@@ -1860,6 +1883,19 @@ class FFmpegUltimateTool:
                         cmd.extend(["-b:v", orig_v_bitrate])
                     else:
                         cmd.extend(["-crf", "28"]) # 提取失败则回退默认
+                elif self.m_quality_mode.get() == 4:
+                    # === 智能限流核心逻辑 ===
+                    try: target_br = int(self.m_max_bitrate.get())
+                    except: target_br = 3000
+                    orig_v_bitrate = self.get_video_stream_bitrate(v_path)
+                    if orig_v_bitrate:
+                        orig_br_kbps = int(orig_v_bitrate) // 1000
+                        if orig_br_kbps > target_br:
+                            cmd.extend(["-b:v", f"{target_br}k"])
+                        else:
+                            cmd.extend(["-b:v", orig_v_bitrate])
+                    else:
+                        cmd.extend(["-b:v", f"{target_br}k"])
                 
                 preset_val = self.m_preset.get()
                 if encoder == "h264_amf":
@@ -2135,33 +2171,37 @@ class FFmpegUltimateTool:
 
         self.sm_rb_q1 = ttk.Radiobutton(frame_q_sm, text="固定:", variable=self.sm_quality_mode, value=1)
         self.sm_rb_q1.pack(side="left")
-        self.sm_entry_br = ttk.Entry(frame_q_sm, textvariable=self.sm_bitrate, width=6)
-        self.sm_entry_br.pack(side="left", padx=(0, 10))
+        self.sm_entry_br = ttk.Entry(frame_q_sm, textvariable=self.sm_bitrate, width=5)
+        self.sm_entry_br.pack(side="left", padx=(0, 2))
+
+        self.sm_rb_q4 = ttk.Radiobutton(frame_q_sm, text="上限:", variable=self.sm_quality_mode, value=4)
+        self.sm_rb_q4.pack(side="left")
+        self.sm_entry_max_br = ttk.Entry(frame_q_sm, textvariable=self.sm_max_bitrate, width=5)
+        self.sm_entry_max_br.pack(side="left", padx=(0, 2))
 
         self.sm_rb_q2 = ttk.Radiobutton(frame_q_sm, text="CRF:", variable=self.sm_quality_mode, value=2)
         self.sm_rb_q2.pack(side="left")
-        self.sm_entry_crf = ttk.Entry(frame_q_sm, textvariable=self.sm_crf, width=4)
-        self.sm_entry_crf.pack(side="left", padx=(0, 10))
+        self.sm_entry_crf = ttk.Entry(frame_q_sm, textvariable=self.sm_crf, width=3)
+        self.sm_entry_crf.pack(side="left", padx=(0, 2))
 
         self.sm_rb_q3 = ttk.Radiobutton(frame_q_sm, text="保原码率", variable=self.sm_quality_mode, value=3)
-        self.sm_rb_q3.pack(side="left", padx=(0, 15))
+        self.sm_rb_q3.pack(side="left", padx=(0, 5))
 
         ttk.Label(frame_q_sm, text="FPS:").pack(side="left")
-        self.sm_cb_fps = ttk.Combobox(frame_q_sm, textvariable=self.sm_fps_var, values=self.fps_options, state="readonly", width=5)
-        self.sm_cb_fps.pack(side="left", padx=(0, 10))
+        self.sm_cb_fps = ttk.Combobox(frame_q_sm, textvariable=self.sm_fps_var, values=self.fps_options, state="readonly", width=4)
+        self.sm_cb_fps.pack(side="left", padx=(0, 5))
 
         ttk.Label(frame_q_sm, text="预设:").pack(side="left")
-        self.sm_cb_preset = ttk.Combobox(frame_q_sm, textvariable=self.sm_preset, values=["fast", "medium", "slow"], state="readonly", width=7)
-        self.sm_cb_preset.pack(side="left", padx=(0, 10))
+        self.sm_cb_preset = ttk.Combobox(frame_q_sm, textvariable=self.sm_preset, values=["fast", "medium", "slow"], state="readonly", width=6)
+        self.sm_cb_preset.pack(side="left", padx=(0, 5))
 
         ttk.Label(frame_q_sm, text="线程:").pack(side="left")
-        self.sm_cb_threads = ttk.Combobox(frame_q_sm, textvariable=self.sm_threads_var, values=self.threads_options, state="readonly", width=4)
-        self.sm_cb_threads.pack(side="left", padx=(0, 8))
+        self.sm_cb_threads = ttk.Combobox(frame_q_sm, textvariable=self.sm_threads_var, values=self.threads_options, state="readonly", width=3)
+        self.sm_cb_threads.pack(side="left", padx=(0, 5))
 
         ttk.Label(frame_q_sm, text="音码:").pack(side="left")
         self.sm_cb_audio_br = ttk.Combobox(frame_q_sm, textvariable=self.sm_audio_bitrate_var, values=["保持原始", "128", "192", "256", "320"], width=6)
         self.sm_cb_audio_br.pack(side="left")
-        # === 替换结束 ===
 
         # 5. 底部操作区
         frame_bottom_sm = ttk.Frame(self.tab_split_merge, padding=(10, 10))
@@ -2198,7 +2238,7 @@ class FFmpegUltimateTool:
         t_state_e = "disabled" if self.sm_copy_stream.get() else "normal"
             
         self.sm_cb_fmt.config(state=t_state_c)
-        self.sm_cb_vcodec.config(state=t_state_c) # 新增这一行：互斥控制编码下拉框
+        self.sm_cb_vcodec.config(state=t_state_c) 
         self.sm_cb_enc.config(state=t_state_c)
         self.sm_rb_res1.config(state=t_state_e)
         self.sm_rb_res2.config(state=t_state_e)
@@ -2206,12 +2246,14 @@ class FFmpegUltimateTool:
         self.sm_rb_q1.config(state=t_state_e)
         self.sm_rb_q2.config(state=t_state_e)
         self.sm_rb_q3.config(state=t_state_e)
+        self.sm_rb_q4.config(state=t_state_e) # 新增：限码单选框互斥
         self.sm_entry_br.config(state=t_state_e)
         self.sm_entry_crf.config(state=t_state_e)
+        self.sm_entry_max_br.config(state=t_state_e) # 新增：限码输入框互斥
         self.sm_cb_fps.config(state=t_state_c)
         self.sm_cb_preset.config(state=t_state_c)
         self.sm_cb_threads.config(state=t_state_c)
-        self.sm_cb_audio_br.config(state=t_state_c) # 新增：勾选全部保留参数时，音码下拉框禁用
+        self.sm_cb_audio_br.config(state=t_state_c) 
         self.update_sm_res_ui()
 
     def on_sm_prop_w_check(self):
@@ -2375,6 +2417,19 @@ class FFmpegUltimateTool:
                 orig_v_bitrate = self.get_video_stream_bitrate(in_file)
                 if orig_v_bitrate: cmd.extend(["-b:v", orig_v_bitrate])
                 else: cmd.extend(["-crf", "28"])
+            elif qm == 4:
+                # === 智能限流核心逻辑 ===
+                try: target_br = int(self.sm_max_bitrate.get())
+                except: target_br = 3000
+                orig_v_bitrate = self.get_video_stream_bitrate(in_file)
+                if orig_v_bitrate:
+                    orig_br_kbps = int(orig_v_bitrate) // 1000
+                    if orig_br_kbps > target_br:
+                        cmd.extend(["-b:v", f"{target_br}k"])
+                    else:
+                        cmd.extend(["-b:v", orig_v_bitrate])
+                else:
+                    cmd.extend(["-b:v", f"{target_br}k"])
                 
             # 帧率与预设
             if self.sm_fps_var.get() != "保持原始": cmd.extend(["-r", self.sm_fps_var.get()])

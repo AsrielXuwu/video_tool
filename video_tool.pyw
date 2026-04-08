@@ -93,7 +93,7 @@ class FFmpegUltimateTool:
         self.root = root
         self.root.title("视频批量处理工具")
         # 增加窗口宽度与高度以完美容纳加宽的下拉框和单选框
-        self.root.geometry("845x630")
+        self.root.geometry("845x640")
         self.root.resizable(True, True)
         self.root.minsize(600, 600)
 
@@ -1230,7 +1230,8 @@ class FFmpegUltimateTool:
         frame_font.grid(row=9, column=1, sticky="w")
         font_families = list(tkfont.families())
         font_families.sort()
-        default_font = "SimHei" if "SimHei" in font_families else (font_families[0] if font_families else "Arial")
+        # 兼容中文系统下 tkinter 返回 "黑体" 而不是 "SimHei" 的情况
+        default_font = "黑体" if "黑体" in font_families else ("SimHei" if "SimHei" in font_families else (font_families[0] if font_families else "Arial"))
         self.m_font_name.set(default_font)
         self.m_cb_font = ttk.Combobox(frame_font, textvariable=self.m_font_name, values=font_families, width=35)
         self.m_cb_font.pack(side="left")
@@ -1518,12 +1519,36 @@ class FFmpegUltimateTool:
 
         total_files = len(video_files)
         
+        total_files = len(video_files)
+        
         # === 新增：全局 ASS 字体秒扫预检机制 ===
         if s_dir and os.path.exists(s_dir):
             self.root.after(0, self.m_status_text.set, "正在全局预检 ASS 字体完整性...")
             global_missing_fonts = set()
             sys_fonts = [f.lower() for f in tkfont.families()]
             
+            # 建立中英文字体映射字典，解决 tkinter 只能读取本地化中文名的问题
+            font_alias_map = {
+                "simhei": "黑体",
+                "microsoft yahei": "微软雅黑",
+                "simsun": "宋体",
+                "fangsong": "仿宋",
+                "kaiti": "楷体",
+                "stsong": "华文宋体",
+                "stfangsong": "华文仿宋",
+                "stxihei": "华文细黑",
+                "stkaiti": "华文楷体",
+                "youyuan": "幼圆",
+                "lisu": "隶书"
+            }
+            
+            def check_font_missing(font_name):
+                check_font = font_name.lstrip('@').replace('"', '').replace("'", "").strip().lower()
+                if not check_font: return False
+                # 同时检查英文名和映射后的中文名
+                mapped_font = font_alias_map.get(check_font, check_font)
+                return (check_font not in sys_fonts) and (mapped_font not in sys_fonts)
+
             for v_filename in video_files:
                 base_name = os.path.splitext(v_filename)[0]
                 s_path_check = os.path.join(s_dir, base_name + '.ass')
@@ -1534,15 +1559,11 @@ class FFmpegUltimateTool:
                             # 提取样式表字体
                             for match in re.finditer(r"^Style:\s*[^,]+,\s*([^,]+)", content, re.MULTILINE):
                                 font = match.group(1).strip()
-                                check_font = font.lstrip('@').replace('"', '').replace("'", "")
-                                if check_font and check_font.lower() not in sys_fonts:
-                                    global_missing_fonts.add(font)
+                                if check_font_missing(font): global_missing_fonts.add(font)
                             # 提取内联特效字体
                             for match in re.finditer(r"\\fn([^\\}]+)", content):
                                 font = match.group(1).strip()
-                                check_font = font.lstrip('@').replace('"', '').replace("'", "")
-                                if check_font and check_font.lower() not in sys_fonts:
-                                    global_missing_fonts.add(font)
+                                if check_font_missing(font): global_missing_fonts.add(font)
                     except Exception as e:
                         print(f"预检 ASS 警告: {e}")
             

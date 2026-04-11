@@ -15,27 +15,87 @@ import pandas as pd
 # === 核心修改：动态获取外部 ffmpeg 文件夹路径 ===
 def get_bin_path(filename):
     """
-    智能获取 ffmpeg 二进制文件的绝对路径。
-    要求二进制文件存放在程序同级的 ffmpeg 文件夹下。
+    优先检查环境变量，其次探测本地打包目录，完美兼容 Windows 与 macOS 应用程序包 (.app)。
     """
+    if sys.platform.startswith('win') and not filename.endswith('.exe'):
+        filename += '.exe'
+        
+    env_path = shutil.which(filename)
+    if env_path:
+        return env_path
+        
     if getattr(sys, 'frozen', False):
-        # 如果是经过 pyinstaller 打包的独立 exe，获取 exe 所在的当前目录
-        base_path = os.path.dirname(sys.executable)
+        if sys.platform == 'darwin' and sys.executable.endswith('MacOS/video_tool'):
+            # 兼容 macOS 的 .app 应用程序包 (向上退 4 级回到 .app 同级目录)
+            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))
+        else:
+            # 兼容 Windows 用户直接下载解压的情况 (exe 与 ffmpeg 文件夹同级)
+            base_path = os.path.dirname(sys.executable)
     else:
-        # 如果是普通的 python 脚本运行，获取当前 pyw 脚本所在的同级目录
+        # 源码运行
         base_path = os.path.dirname(os.path.abspath(__file__))
     
-    # 拼接为: exe所在目录/ffmpeg/ffmpeg.exe
     return os.path.join(base_path, "ffmpeg", filename)
+
+# === 新增：智能检测系统 GPU 并分配最佳编码器 ===
+def auto_detect_gpu():
+    """
+    跨平台智能探测系统显卡。
+    双重引擎探测：优先使用 PowerShell（适配最新 Win11），备用 wmic（兼容老系统）。
+    Windows 优先逆序匹配（优先识别独显 GPU 1，其次核显 GPU 0）；
+    macOS 直接返回 Apple VideoToolbox。
+    """
+    if sys.platform == 'darwin':
+        return "Apple (VideoToolbox)"
+    elif sys.platform.startswith('win'):
+        gpus = []
+        # 引擎 1：现代 Windows 11 首选 PowerShell 探测
+        try:
+            ps_cmd = 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'
+            result = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", ps_cmd], 
+                creationflags=subprocess.CREATE_NO_WINDOW, 
+                text=True, errors='ignore'
+            )
+            gpus = [line.strip() for line in result.split('\n') if line.strip()]
+        except Exception:
+            pass
+            
+        # 引擎 2：如果 PowerShell 失败，回退到经典 wmic 探测 (兼容 Win10/Win7)
+        if not gpus:
+            try:
+                result = subprocess.check_output(
+                    ["wmic", "path", "win32_VideoController", "get", "name"],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    text=True, errors='ignore'
+                )
+                gpus = [line.strip() for line in result.split('\n') if line.strip() and line.strip().lower() != 'name']
+            except Exception:
+                pass
+
+        # 逆序遍历显卡列表（倒序检查，优先匹配 GPU 1 独显）
+        for gpu in reversed(gpus):
+            gpu_lower = gpu.lower()
+            if "nvidia" in gpu_lower:
+                return "NVIDIA (NVENC)"
+            elif "amd" in gpu_lower or "radeon" in gpu_lower:
+                return "AMD (AMF)"
+        
+        # 如果没有独立显卡，再统一检查核显
+        for gpu in reversed(gpus):
+            if "intel" in gpu.lower():
+                return "Intel (QSV)"
+                
+    return "CPU (H.264)" # 探测失败或无支持硬件时的兜底方案
 
 class FFmpegUltimateTool:
     def __init__(self, root):
         self.root = root
         self.root.title("视频批量处理工具")
         # 增加窗口宽度与高度以完美容纳加宽的下拉框和单选框
-        self.root.geometry("730x600")
+        self.root.geometry("845x640")
         self.root.resizable(True, True)
-        self.root.minsize(730, 600)
+        self.root.minsize(600, 600)
 
         style = ttk.Style()
         if "vista" in style.theme_names():
@@ -51,13 +111,17 @@ class FFmpegUltimateTool:
         self.target_fmt_var = tk.StringVar(value="保持原格式")
         self.target_fmt_options = ["保持原格式", "MP4", "MKV", "MOV", "AVI"]
 
+        # 智能获取系统推荐的硬件加速器
+        default_encoder = auto_detect_gpu()
+
         self.codec_var = tk.StringVar(value="H.264") # 新增: 视频编码格式
-        self.encoder_var = tk.StringVar(value="NVIDIA (NVENC)")
+        self.encoder_var = tk.StringVar(value=default_encoder)
         self.encoder_map = {
             "CPU (H.264)": "libx264",
             "NVIDIA (NVENC)": "h264_nvenc",
             "AMD (AMF)": "h264_amf",
             "Intel (QSV)": "h264_qsv",
+            "Apple (VideoToolbox)": "h264_videotoolbox", # 新增: 兼容 Mac M系列芯片
             "纯转封装 (极速)": "copy"
         }
 
@@ -71,6 +135,7 @@ class FFmpegUltimateTool:
 
         self.quality_mode = tk.IntVar(value=2)
         self.bitrate = tk.StringVar(value="3000")
+        self.max_bitrate = tk.StringVar(value="3000") # 新增: 批量处理限流上限
         self.crf = tk.StringVar(value="28")
         self.preset = tk.StringVar(value="medium")
         self.copy_audio = tk.BooleanVar(value=True)
@@ -81,6 +146,8 @@ class FFmpegUltimateTool:
 
         self.threads_var = tk.StringVar(value="自动")
         self.threads_options = ["自动", "1", "2", "4", "8", "16", "32"]
+
+        self.audio_bitrate_var = tk.StringVar(value="192") # 新增: 视频批量处理音频码率
 
         self.force_sync = tk.BooleanVar(value=False)
 
@@ -93,10 +160,17 @@ class FFmpegUltimateTool:
         
         # 补全上一版遗漏的核心变量
         self.m_codec_var = tk.StringVar(value="H.264") # 新增: 视频编码格式
-        self.m_encoder_var = tk.StringVar(value="NVIDIA (NVENC)")
+        self.m_encoder_var = tk.StringVar(value=default_encoder)
         self.m_quality_mode = tk.IntVar(value=2)
         self.m_bitrate = tk.StringVar(value="3000")
+        self.m_max_bitrate = tk.StringVar(value="3000") # 新增: 合并界面限流上限
         self.m_crf = tk.StringVar(value="28")
+        self.m_audio_bitrate_var = tk.StringVar(value="320") # 新增: 默认 320kbps 高音质
+        
+        # === 新增: 外部音频偏移与时间轴拉伸适应 ===
+        self.m_audio_offset = tk.StringVar(value="0") # 毫秒 (ms)，正数推后，负数提前
+        self.m_force_tempo = tk.BooleanVar(value=False)
+        self.m_force_crop = tk.BooleanVar(value=True) # 新增: 强制裁剪音频尾巴对齐视频
         
         self.m_res_mode = tk.IntVar(value=1)
         self.m_prop_w_en = tk.BooleanVar(value=True) 
@@ -123,8 +197,8 @@ class FFmpegUltimateTool:
         self.re_time = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}\.\d+)")
 
         # === 获取组件绝对路径 ===
-        self.ffmpeg_bin = get_bin_path("ffmpeg.exe")
-        self.ffprobe_bin = get_bin_path("ffprobe.exe")
+        self.ffmpeg_bin = get_bin_path("ffmpeg")
+        self.ffprobe_bin = get_bin_path("ffprobe")
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -155,7 +229,8 @@ class FFmpegUltimateTool:
         self.sm_split_out1 = tk.StringVar()
         self.sm_split_out2 = tk.StringVar()
         self.sm_split_mode = tk.IntVar(value=2) # 1: 时间, 2: 百分比
-        self.sm_split_time = tk.StringVar(value="00:00:00")
+        self.sm_split_dir = tk.IntVar(value=1)  # 新增: 1为正序，2为倒序
+        self.sm_split_time = tk.StringVar(value="00:00:00.000") 
         self.sm_split_pct = tk.StringVar(value="50")
         
         self.sm_merge_in1 = tk.StringVar()
@@ -167,10 +242,12 @@ class FFmpegUltimateTool:
         
         self.sm_fmt_var = tk.StringVar(value="保持原格式")
         self.sm_codec_var = tk.StringVar(value="H.264") # 新增: 视频编码格式
-        self.sm_encoder_var = tk.StringVar(value="NVIDIA (NVENC)")
+        self.sm_encoder_var = tk.StringVar(value=default_encoder)
         self.sm_quality_mode = tk.IntVar(value=2)
         self.sm_bitrate = tk.StringVar(value="3000")
+        self.sm_max_bitrate = tk.StringVar(value="3000") # 新增: 拆分合并限流上限
         self.sm_crf = tk.StringVar(value="28")
+        self.sm_audio_bitrate_var = tk.StringVar(value="320") # 新增: 默认 320kbps 高音质
         
         self.sm_res_mode = tk.IntVar(value=1)
         self.sm_prop_w_en = tk.BooleanVar(value=True) 
@@ -256,27 +333,36 @@ class FFmpegUltimateTool:
         ttk.Radiobutton(lf_other, text="平均码率(kbps):", variable=self.quality_mode, value=1).grid(row=0, column=0, sticky="w")
         ttk.Entry(lf_other, textvariable=self.bitrate, width=8).grid(row=0, column=1)
 
-        ttk.Radiobutton(lf_other, text="动态质量(推荐28):", variable=self.quality_mode, value=2).grid(row=1, column=0, sticky="w", pady=(5,0))
-        ttk.Entry(lf_other, textvariable=self.crf, width=8).grid(row=1, column=1, sticky="w", pady=(5,0))
+        # 新增的智能限流选项
+        ttk.Radiobutton(lf_other, text="智能限流(上限kbps):", variable=self.quality_mode, value=4).grid(row=1, column=0, sticky="w", pady=(5,0))
+        ttk.Entry(lf_other, textvariable=self.max_bitrate, width=8).grid(row=1, column=1, sticky="w", pady=(5,0))
 
-        ttk.Radiobutton(lf_other, text="保持原视频流码率", variable=self.quality_mode, value=3).grid(row=2, column=0, columnspan=2, sticky="w", pady=(5,0))
+        # 后面的行号整体 +1
+        ttk.Radiobutton(lf_other, text="动态质量(推荐28):", variable=self.quality_mode, value=2).grid(row=2, column=0, sticky="w", pady=(5,0))
+        ttk.Entry(lf_other, textvariable=self.crf, width=8).grid(row=2, column=1, sticky="w", pady=(5,0))
 
-        ttk.Label(lf_other, text="视频帧率(FPS):").grid(row=3, column=0, sticky="w", pady=(10,0))
+        ttk.Radiobutton(lf_other, text="保持原视频流码率", variable=self.quality_mode, value=3).grid(row=3, column=0, columnspan=2, sticky="w", pady=(5,0))
+
+        ttk.Label(lf_other, text="视频帧率(FPS):").grid(row=4, column=0, sticky="w", pady=(10,0))
         cb_fps = ttk.Combobox(lf_other, textvariable=self.fps_var, values=self.fps_options, width=8, state="readonly")
-        cb_fps.grid(row=3, column=1, pady=(10,0))
+        cb_fps.grid(row=4, column=1, pady=(10,0))
 
-        ttk.Label(lf_other, text="编码预设:").grid(row=4, column=0, sticky="w", pady=(10,0))
+        ttk.Label(lf_other, text="编码预设:").grid(row=5, column=0, sticky="w", pady=(10,0))
         cb_preset = ttk.Combobox(lf_other, textvariable=self.preset, values=["fast", "medium", "slow"], width=8, state="readonly")
-        cb_preset.grid(row=4, column=1, pady=(10,0))
+        cb_preset.grid(row=5, column=1, pady=(10,0))
 
-        ttk.Label(lf_other, text="线程数:").grid(row=5, column=0, sticky="w", pady=(10,0))
+        ttk.Label(lf_other, text="线程数:").grid(row=6, column=0, sticky="w", pady=(10,0))
         cb_threads = ttk.Combobox(lf_other, textvariable=self.threads_var, values=self.threads_options, width=8, state="readonly")
-        cb_threads.grid(row=5, column=1, pady=(10,0))
+        cb_threads.grid(row=6, column=1, pady=(10,0))
 
-        ttk.Separator(lf_other, orient='horizontal').grid(row=6, column=0, columnspan=2, sticky="we", pady=10)
-        ttk.Checkbutton(lf_other, text="保留原音频 (无损极速)", variable=self.copy_audio).grid(row=7, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(lf_other, text="Web优化 (边下边播)", variable=self.faststart).grid(row=8, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(lf_other, text="强制音画同步 (防时长微调)", variable=self.force_sync).grid(row=9, column=0, columnspan=2, sticky="w")
+        ttk.Label(lf_other, text="音频码率:").grid(row=7, column=0, sticky="w", pady=(10,0))
+        cb_audio_br = ttk.Combobox(lf_other, textvariable=self.audio_bitrate_var, values=["保持原始", "128", "192", "256", "320"], width=8)
+        cb_audio_br.grid(row=7, column=1, pady=(10,0))
+
+        ttk.Separator(lf_other, orient='horizontal').grid(row=8, column=0, columnspan=2, sticky="we", pady=10)
+        ttk.Checkbutton(lf_other, text="保留原音频 (无损极速)", variable=self.copy_audio).grid(row=9, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(lf_other, text="Web优化 (边下边播)", variable=self.faststart).grid(row=10, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(lf_other, text="强制音画同步 (防时长微调)", variable=self.force_sync).grid(row=11, column=0, columnspan=2, sticky="w")
 
         # === 替换为新的底部紧凑操作区 (同行布局) ===
         frame_bottom = ttk.Frame(self.tab_process, padding=(10, 10))
@@ -571,6 +657,20 @@ class FFmpegUltimateTool:
             pass
         return None
 
+    def get_audio_stream_bitrate(self, filepath):
+        """核心辅助：智能获取音频流原码率"""
+        try:
+            cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'a:0', filepath]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            data = json.loads(result.stdout)
+            if 'streams' in data and len(data['streams']) > 0:
+                stream = data['streams'][0]
+                if 'bit_rate' in stream:
+                    return f"{stream['bit_rate']}"
+        except Exception:
+            pass
+        return None
+
     def start_processing(self):
         in_dir, out_dir = self.in_dir.get(), self.out_dir.get()
         if not os.path.exists(in_dir) or not out_dir:
@@ -611,21 +711,6 @@ class FFmpegUltimateTool:
             self.root.after(0, self.reset_ui_state, "输入目录中未找到支持的视频文件。")
             return
 
-        vcodec = self.codec_var.get()
-        hw_choice = self.encoder_var.get()
-        if vcodec == "保持原始" or hw_choice == "纯转封装 (极速)":
-            encoder = "copy"
-        elif vcodec == "H.265":
-            if "NVIDIA" in hw_choice: encoder = "hevc_nvenc"
-            elif "AMD" in hw_choice: encoder = "hevc_amf"
-            elif "Intel" in hw_choice: encoder = "hevc_qsv"
-            else: encoder = "libx265"
-        else: # 默认 H.264
-            if "NVIDIA" in hw_choice: encoder = "h264_nvenc"
-            elif "AMD" in hw_choice: encoder = "h264_amf"
-            elif "Intel" in hw_choice: encoder = "h264_qsv"
-            else: encoder = "libx264"
-
         target_fmt = self.target_fmt_var.get()
         total_files = len(files)
 
@@ -635,6 +720,34 @@ class FFmpegUltimateTool:
             os.makedirs(actual_out_dir, exist_ok=True)
 
         for i, filename in enumerate(files):
+            if self.is_cancelled:
+                break
+
+            in_file = os.path.join(in_dir, filename)
+            file_name_without_ext, original_ext = os.path.splitext(filename)
+            
+            # === 核心修改：针对每个文件动态决定真实编码器 ===
+            vcodec = self.codec_var.get()
+            hw_choice = self.encoder_var.get()
+            
+            if hw_choice == "纯转封装 (极速)":
+                encoder = "copy"
+            else:
+                if vcodec == "保持原始":
+                    vcodec = self.get_video_codec(in_file) # 动态探测！
+                    
+                if vcodec == "H.265":
+                    if "NVIDIA" in hw_choice: encoder = "hevc_nvenc"
+                    elif "AMD" in hw_choice: encoder = "hevc_amf"
+                    elif "Intel" in hw_choice: encoder = "hevc_qsv"
+                    elif "Apple" in hw_choice: encoder = "hevc_videotoolbox"
+                    else: encoder = "libx265"
+                else: # H.264
+                    if "NVIDIA" in hw_choice: encoder = "h264_nvenc"
+                    elif "AMD" in hw_choice: encoder = "h264_amf"
+                    elif "Intel" in hw_choice: encoder = "h264_qsv"
+                    elif "Apple" in hw_choice: encoder = "h264_videotoolbox"
+                    else: encoder = "libx264"
             if self.is_cancelled:
                 break
 
@@ -666,16 +779,12 @@ class FFmpegUltimateTool:
                     cmd.extend(["-b:v", f"{self.bitrate.get()}k"])
                 elif self.quality_mode.get() == 2:
                     q_val = self.crf.get()
-                    if encoder == "libx264":
-                        cmd.extend(["-crf", q_val])
-                    elif encoder == "h264_nvenc":
-                        cmd.extend(["-cq", q_val])
-                    elif encoder == "h264_amf":
-                        cmd.extend(["-rc", "cqp", "-qp_i", q_val, "-qp_p", q_val, "-qp_b", q_val])
-                    elif encoder == "h264_qsv":
-                        cmd.extend(["-global_quality", q_val])
-                    else:
-                        cmd.extend(["-crf", q_val])
+                    if "libx26" in encoder: cmd.extend(["-crf", q_val])
+                    elif "nvenc" in encoder: cmd.extend(["-cq", q_val])
+                    elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q_val, "-qp_p", q_val, "-qp_b", q_val])
+                    elif "qsv" in encoder: cmd.extend(["-global_quality", q_val])
+                    elif "videotoolbox" in encoder: cmd.extend(["-q:v", q_val]) # 新增: Mac M芯片动态质量参数
+                    else: cmd.extend(["-crf", q_val])
                 elif self.quality_mode.get() == 3:
                     # 动态探测原视频流码率
                     orig_v_bitrate = self.get_video_stream_bitrate(in_file)
@@ -683,6 +792,19 @@ class FFmpegUltimateTool:
                         cmd.extend(["-b:v", orig_v_bitrate])
                     else:
                         cmd.extend(["-crf", "28"]) # 提取失败则回退默认
+                elif self.quality_mode.get() == 4:
+                    # === 智能限流核心逻辑 ===
+                    try: target_br = int(self.max_bitrate.get())
+                    except: target_br = 3000
+                    orig_v_bitrate = self.get_video_stream_bitrate(in_file)
+                    if orig_v_bitrate:
+                        orig_br_kbps = int(orig_v_bitrate) // 1000
+                        if orig_br_kbps > target_br:
+                            cmd.extend(["-b:v", f"{target_br}k"]) # 大于目标，截断为上限
+                        else:
+                            cmd.extend(["-b:v", orig_v_bitrate])  # 小于目标，保持原状
+                    else:
+                        cmd.extend(["-b:v", f"{target_br}k"])
                 
                 preset_val = self.preset.get()
                 if encoder == "h264_amf":
@@ -702,7 +824,15 @@ class FFmpegUltimateTool:
             if self.copy_audio.get() or encoder == "copy":
                 cmd.extend(["-c:a", "copy"])
             else:
-                cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                audio_br = self.audio_bitrate_var.get().strip()
+                if audio_br == "保持原始":
+                    orig_a_br = self.get_audio_stream_bitrate(in_file)
+                    if orig_a_br:
+                        cmd.extend(["-c:a", "aac", "-b:a", orig_a_br])
+                    else:
+                        cmd.extend(["-c:a", "aac", "-b:a", "192k"]) # 获取失败兜底
+                else:
+                    cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
 
             if self.faststart.get() and out_ext.lower() in ['.mp4', '.mov']:
                 cmd.extend(["-movflags", "+faststart"])
@@ -1000,9 +1130,14 @@ class FFmpegUltimateTool:
         
         self.m_orig_vol = tk.StringVar(value="100%")
         self.m_voice_vol = tk.StringVar(value="100%")
-        self.m_bgm_vol = tk.StringVar(value="30%")
+        self.m_bgm_vol = tk.StringVar(value="35%")
         
         self.m_keep_orig_audio = tk.BooleanVar(value=False)
+        
+        # === 新增：各轨道单独的声道设置 ===
+        self.m_orig_ch = tk.StringVar(value="保持原始")
+        self.m_voice_ch = tk.StringVar(value="双声道") # 默认干声常为单声道，将其默认设为双声道无损克隆
+        self.m_bgm_ch = tk.StringVar(value="保持原始")
         
         self.m_font_name = tk.StringVar()
         self.m_font_size = tk.StringVar(value="24")
@@ -1046,7 +1181,7 @@ class FFmpegUltimateTool:
         lf_left = ttk.LabelFrame(frame_settings, text="音轨互斥策略与字幕(SRT)设定", padding=10)
         lf_left.pack(side="left", fill="both", expand=True, padx=(0, 5))
         
-        ttk.Radiobutton(lf_left, text="手动设置音量 (支持多轨混合或单轨):", variable=self.m_audio_mode, value=1, command=self.update_m_audio_ui).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,2))
+        ttk.Radiobutton(lf_left, text="手动设置音量(已将对数映射至百分比):", variable=self.m_audio_mode, value=1, command=self.update_m_audio_ui).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,2))
         
         frame_vols = ttk.Frame(lf_left)
         frame_vols.grid(row=1, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
@@ -1063,42 +1198,72 @@ class FFmpegUltimateTool:
         self.m_cb_bvol = ttk.Combobox(frame_vols, textvariable=self.m_bgm_vol, values=["200%", "150%", "125%","100%", "80%", "70%","65%", "0% (静音)"], width=7)
         self.m_cb_bvol.pack(side="left")
 
-        chk_keep = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨 (混音)", variable=self.m_keep_orig_audio)
-        chk_keep.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        # === 新增：声道设置框 (放在音量下方) ===
+        frame_chs = ttk.Frame(lf_left)
+        frame_chs.grid(row=2, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
+        
+        ttk.Label(frame_chs, text="原声:").pack(side="left")
+        self.m_cb_och = ttk.Combobox(frame_chs, textvariable=self.m_orig_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
+        self.m_cb_och.pack(side="left", padx=(0, 8))
+        
+        ttk.Label(frame_chs, text="干声:").pack(side="left")
+        self.m_cb_vch = ttk.Combobox(frame_chs, textvariable=self.m_voice_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
+        self.m_cb_vch.pack(side="left", padx=(0, 8))
+        
+        ttk.Label(frame_chs, text="BGM:").pack(side="left")
+        self.m_cb_bch = ttk.Combobox(frame_chs, textvariable=self.m_bgm_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
+        self.m_cb_bch.pack(side="left")
 
-        ttk.Radiobutton(lf_left, text="多音轨混合自动平衡 (loudnorm)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        # 以下原件的 row 行号全部自动顺延 +1
+        chk_keep = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
+        chk_keep.grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
         
-        ttk.Radiobutton(lf_left, text="保持原始音频流 (WAV/FLAC将自动转AAC防爆音)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 5))
+        f_mode4 = ttk.Frame(lf_left)
+        f_mode4.grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Radiobutton(f_mode4, text="独立标准化各音轨后再混合", variable=self.m_audio_mode, value=4, command=self.update_m_audio_ui).pack(side="left")
         
-        ttk.Separator(lf_left, orient='horizontal').grid(row=5, column=0, columnspan=2, sticky="we", pady=5)
-        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=6, column=0, columnspan=2, sticky="w")
+        ttk.Label(f_mode4, text=" 目标标准(LUFS):").pack(side="left", padx=(10, 2))
+        self.m_target_lufs = tk.StringVar(value="-12.0")
+        self.m_spin_lufs = ttk.Spinbox(f_mode4, from_=-70.0, to=-5.0, increment=1.0, textvariable=self.m_target_lufs, width=6)
+        self.m_spin_lufs.pack(side="left")
+
+        ttk.Radiobutton(lf_left, text="保持原始音频流(单轨使用)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 5))
         
-        ttk.Label(lf_left, text="SRT字体:").grid(row=7, column=0, sticky="w", pady=2)
+        f_time = ttk.Frame(lf_left)
+        f_time.grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(f_time, text="音频偏移(ms):").pack(side="left")
+        self.m_entry_offset = ttk.Entry(f_time, textvariable=self.m_audio_offset, width=5)
+        self.m_entry_offset.pack(side="left", padx=(2, 8))
+        self.m_cb_tempo = ttk.Checkbutton(f_time, text="拉伸自适应", variable=self.m_force_tempo, command=self.on_m_tempo_check)
+        self.m_cb_tempo.pack(side="left", padx=(0, 8))
+        self.m_cb_crop = ttk.Checkbutton(f_time, text="直接裁剪尾巴", variable=self.m_force_crop, command=self.on_m_crop_check)
+        self.m_cb_crop.pack(side="left")
+
+        ttk.Separator(lf_left, orient='horizontal').grid(row=8, column=0, columnspan=2, sticky="we", pady=5)
+        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=9, column=0, columnspan=2, sticky="w")
         
-        # 将字体输入框改为组合选项 (加宽下拉框 + 浏览文件按钮)
+        ttk.Label(lf_left, text="SRT字体:").grid(row=10, column=0, sticky="w", pady=2)
+        
         frame_font = ttk.Frame(lf_left)
-        frame_font.grid(row=7, column=1, sticky="w")
-        
-        # 获取系统已安装的所有字体并排序
+        frame_font.grid(row=10, column=1, sticky="w")
         font_families = list(tkfont.families())
         font_families.sort()
-        default_font = "SimHei" if "SimHei" in font_families else (font_families[0] if font_families else "Arial")
+        default_font = "黑体" if "黑体" in font_families else ("SimHei" if "SimHei" in font_families else (font_families[0] if font_families else "Arial"))
         self.m_font_name.set(default_font)
-        
-        # 宽度大幅加宽以容纳超长字体名称
         self.m_cb_font = ttk.Combobox(frame_font, textvariable=self.m_font_name, values=font_families, width=35)
         self.m_cb_font.pack(side="left")
-        
         ttk.Button(frame_font, text="浏览...", width=6, command=self.browse_font).pack(side="left", padx=(5,0))
         
-        ttk.Label(lf_left, text="SRT大小:").grid(row=8, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=8, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT大小:").grid(row=11, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=11, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT描边:").grid(row=9, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=9, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT描边:").grid(row=12, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=12, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT边距:").grid(row=10, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=10, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT边距:").grid(row=13, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=13, column=1, sticky="w")
 
         # 初始化时触发一次以确认界面排他状态
         self.update_m_audio_ui()
@@ -1162,28 +1327,34 @@ class FFmpegUltimateTool:
         frame_q_m.grid(row=5, column=0, columnspan=2, sticky="we", pady=2)
 
         ttk.Radiobutton(frame_q_m, text="固定:", variable=self.m_quality_mode, value=1).grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame_q_m, textvariable=self.m_bitrate, width=6).grid(row=0, column=1, sticky="w", padx=(0, 5))
+        ttk.Entry(frame_q_m, textvariable=self.m_bitrate, width=5).grid(row=0, column=1, sticky="w", padx=(0, 2))
 
-        ttk.Radiobutton(frame_q_m, text="CRF:", variable=self.m_quality_mode, value=2).grid(row=0, column=2, sticky="w")
-        ttk.Entry(frame_q_m, textvariable=self.m_crf, width=4).grid(row=0, column=3, sticky="w", padx=(0, 5))
+        ttk.Radiobutton(frame_q_m, text="上限:", variable=self.m_quality_mode, value=4).grid(row=0, column=2, sticky="w")
+        ttk.Entry(frame_q_m, textvariable=self.m_max_bitrate, width=5).grid(row=0, column=3, sticky="w", padx=(0, 2))
 
-        ttk.Radiobutton(frame_q_m, text="保原码率", variable=self.m_quality_mode, value=3).grid(row=0, column=4, sticky="w")
+        ttk.Radiobutton(frame_q_m, text="CRF:", variable=self.m_quality_mode, value=2).grid(row=0, column=4, sticky="w")
+        ttk.Entry(frame_q_m, textvariable=self.m_crf, width=3).grid(row=0, column=5, sticky="w", padx=(0, 2))
 
-        # 视频帧率、预设、线程数 (紧凑横向布局)
+        ttk.Radiobutton(frame_q_m, text="保原码率", variable=self.m_quality_mode, value=3).grid(row=0, column=6, sticky="w")
+        # 视频帧率、预设、线程、音码 (极限单行横向排布)
         f_other_m = ttk.Frame(lf_right)
         f_other_m.grid(row=6, column=0, columnspan=2, sticky="we", pady=(5, 0))
         
-        ttk.Label(f_other_m, text="FPS:").grid(row=0, column=0, sticky="w", pady=2)
-        cb_fps_m = ttk.Combobox(f_other_m, textvariable=self.m_fps_var, values=self.fps_options, state="readonly", width=6)
-        cb_fps_m.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        ttk.Label(f_other_m, text="FPS:").pack(side="left", pady=2)
+        cb_fps_m = ttk.Combobox(f_other_m, textvariable=self.m_fps_var, values=self.fps_options, state="readonly", width=5)
+        cb_fps_m.pack(side="left", padx=(0, 8))
 
-        ttk.Label(f_other_m, text="预设:").grid(row=0, column=2, sticky="w", pady=2)
+        ttk.Label(f_other_m, text="预设:").pack(side="left", pady=2)
         cb_preset_m = ttk.Combobox(f_other_m, textvariable=self.m_preset, values=["fast", "medium", "slow"], state="readonly", width=6)
-        cb_preset_m.grid(row=0, column=3, sticky="w", padx=(0, 8))
+        cb_preset_m.pack(side="left", padx=(0, 8))
 
-        ttk.Label(f_other_m, text="线程:").grid(row=1, column=0, sticky="w", pady=2)
-        cb_threads_m = ttk.Combobox(f_other_m, textvariable=self.m_threads_var, values=self.threads_options, state="readonly", width=6)
-        cb_threads_m.grid(row=1, column=1, sticky="w", padx=(0, 8))
+        ttk.Label(f_other_m, text="线程:").pack(side="left", pady=2)
+        cb_threads_m = ttk.Combobox(f_other_m, textvariable=self.m_threads_var, values=self.threads_options, state="readonly", width=4)
+        cb_threads_m.pack(side="left", padx=(0, 8))
+        
+        ttk.Label(f_other_m, text="音码:").pack(side="left", pady=2)
+        cb_audio_br_m = ttk.Combobox(f_other_m, textvariable=self.m_audio_bitrate_var, values=["128", "192", "256", "320"], width=4)
+        cb_audio_br_m.pack(side="left")
 
         self.update_m_res_ui() # 刷新合并选项卡分辨率UI
 
@@ -1261,17 +1432,62 @@ class FFmpegUltimateTool:
             self.m_entry_exact_w.state(['!disabled'])
             self.m_entry_exact_h.state(['!disabled'])
 
+    def on_m_tempo_check(self):
+        if self.m_force_tempo.get():
+            self.m_force_crop.set(False)
+        self.update_m_audio_ui()
+
+    def on_m_crop_check(self):
+        if self.m_force_crop.get():
+            self.m_force_tempo.set(False)
+        self.update_m_audio_ui()
+
     def update_m_audio_ui(self, *args):
-        """互斥锁：控制手动音量下拉框的灰化禁用状态"""
+        """互斥锁：控制手动音量下拉框的灰化禁用状态，及偏移/拉伸的互斥"""
         mode = self.m_audio_mode.get()
-        if mode == 1:
-            self.m_cb_ovol.config(state="normal")
+        
+        # 核心修改：模式 1 和 模式 4 都需要点亮音量控制框！
+        if mode == 1 or mode == 4:
+            if self.m_keep_orig_audio.get():
+                self.m_cb_ovol.config(state="normal")
+            else:
+                self.m_cb_ovol.config(state="disabled")
             self.m_cb_vvol.config(state="normal")
             self.m_cb_bvol.config(state="normal")
         else:
             self.m_cb_ovol.config(state="disabled")
             self.m_cb_vvol.config(state="disabled")
             self.m_cb_bvol.config(state="disabled")
+
+        # === 新增：声道控制框互斥锁 ===
+        if mode != 3: # 只要不选“纯转封装拷贝”，且勾选了原声，都允许单独设声道
+            if self.m_keep_orig_audio.get():
+                self.m_cb_och.config(state="readonly")
+            else:
+                self.m_cb_och.config(state="disabled")
+            self.m_cb_vch.config(state="readonly")
+            self.m_cb_bch.config(state="readonly")
+        else:
+            self.m_cb_och.config(state="disabled")
+            self.m_cb_vch.config(state="disabled")
+            self.m_cb_bch.config(state="disabled")
+
+        # 控制目标响度LUFS输入框的互斥
+        if hasattr(self, 'm_spin_lufs'):
+            if mode == 4:
+                self.m_spin_lufs.config(state="normal")
+            else:
+                self.m_spin_lufs.config(state="disabled")
+
+        # 处理偏移、拉伸和裁剪选项与“保持原始(模式3)”的互斥
+        if mode == 3:
+            self.m_entry_offset.config(state="disabled")
+            self.m_cb_tempo.config(state="disabled")
+            self.m_cb_crop.config(state="disabled")
+        else:
+            self.m_entry_offset.config(state="normal")
+            self.m_cb_tempo.config(state="normal")
+            self.m_cb_crop.config(state="normal")
 
     def browse_font(self):
         """选择外部自定义字体文件"""
@@ -1330,23 +1546,65 @@ class FFmpegUltimateTool:
         if not video_files:
             self.root.after(0, self.merge_reset_ui, "视频目录中未找到支持的视频文件。")
             return
-
-        vcodec = self.m_encoder_var.get()
-        hw_choice = self.m_encoder_var.get()
-        if vcodec == "保持原始" or hw_choice == "纯转封装 (极速)":
-            encoder = "copy"
-        elif vcodec == "H.265":
-            if "NVIDIA" in hw_choice: encoder = "hevc_nvenc"
-            elif "AMD" in hw_choice: encoder = "hevc_amf"
-            elif "Intel" in hw_choice: encoder = "hevc_qsv"
-            else: encoder = "libx265"
-        else: # 默认 H.264
-            if "NVIDIA" in hw_choice: encoder = "h264_nvenc"
-            elif "AMD" in hw_choice: encoder = "h264_amf"
-            elif "Intel" in hw_choice: encoder = "h264_qsv"
-            else: encoder = "libx264"
-
+        
         total_files = len(video_files)
+        
+        # === 新增：全局 ASS 字体秒扫预检机制 ===
+        if s_dir and os.path.exists(s_dir):
+            self.root.after(0, self.m_status_text.set, "正在全局预检 ASS 字体完整性...")
+            global_missing_fonts = set()
+            sys_fonts = [f.lower() for f in tkfont.families()]
+            
+            # 建立中英文字体映射字典，解决 tkinter 只能读取本地化中文名的问题
+            font_alias_map = {
+                "simhei": "黑体",
+                "microsoft yahei": "微软雅黑",
+                "simsun": "宋体",
+                "fangsong": "仿宋",
+                "kaiti": "楷体",
+                "stsong": "华文宋体",
+                "stfangsong": "华文仿宋",
+                "stxihei": "华文细黑",
+                "stkaiti": "华文楷体",
+                "youyuan": "幼圆",
+                "lisu": "隶书"
+            }
+            
+            def check_font_missing(font_name):
+                check_font = font_name.lstrip('@').replace('"', '').replace("'", "").strip().lower()
+                if not check_font: return False
+                # 同时检查英文名和映射后的中文名
+                mapped_font = font_alias_map.get(check_font, check_font)
+                return (check_font not in sys_fonts) and (mapped_font not in sys_fonts)
+
+            for v_filename in video_files:
+                base_name = os.path.splitext(v_filename)[0]
+                s_path_check = os.path.join(s_dir, base_name + '.ass')
+                if os.path.exists(s_path_check):
+                    try:
+                        with open(s_path_check, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            # 提取样式表字体
+                            for match in re.finditer(r"^Style:\s*[^,]+,\s*([^,]+)", content, re.MULTILINE):
+                                font = match.group(1).strip()
+                                if check_font_missing(font): global_missing_fonts.add(font)
+                            # 提取内联特效字体
+                            for match in re.finditer(r"\\fn([^\\}]+)", content):
+                                font = match.group(1).strip()
+                                if check_font_missing(font): global_missing_fonts.add(font)
+                    except Exception as e:
+                        print(f"预检 ASS 警告: {e}")
+            
+            if global_missing_fonts:
+                err_msg = "在正式开始处理前，检测到以下 ASS 字幕使用了系统未安装的字体：\n\n"
+                err_msg += "\n".join(list(global_missing_fonts))
+                err_msg += "\n\n为防止字幕特效排版错乱，已安全中止任务！\n请在电脑上安装上述字体后，再次点击开始。"
+                
+                self.root.after(0, messagebox.showerror, "ASS字体缺失 (全局预检拦截)", err_msg)
+                self.root.after(0, self.merge_reset_ui, "因字体缺失，合并任务已取消。")
+                return # 预检不通过，直接退出，绝对不生成垃圾文件
+        # === 全局预检结束 ===
+
         processed_count = 0
 
         actual_out_dir = out_dir
@@ -1361,6 +1619,29 @@ class FFmpegUltimateTool:
             base_name = os.path.splitext(v_filename)[0]
             v_path = os.path.join(v_dir, v_filename)
             
+            # === 核心修改：合并时针对主视频探测真实编码器 ===
+            vcodec = self.m_codec_var.get()
+            hw_choice = self.m_encoder_var.get()
+            
+            if hw_choice == "纯转封装 (极速)":
+                encoder = "copy"
+            else:
+                if vcodec == "保持原始":
+                    vcodec = self.get_video_codec(v_path) # 动态探测！
+                    
+                if vcodec == "H.265":
+                    if "NVIDIA" in hw_choice: encoder = "hevc_nvenc"
+                    elif "AMD" in hw_choice: encoder = "hevc_amf"
+                    elif "Intel" in hw_choice: encoder = "hevc_qsv"
+                    elif "Apple" in hw_choice: encoder = "hevc_videotoolbox"
+                    else: encoder = "libx265"
+                else:
+                    if "NVIDIA" in hw_choice: encoder = "h264_nvenc"
+                    elif "AMD" in hw_choice: encoder = "h264_amf"
+                    elif "Intel" in hw_choice: encoder = "h264_qsv"
+                    elif "Apple" in hw_choice: encoder = "h264_videotoolbox"
+                    else: encoder = "libx264"
+            
             # 智能匹配干声
             a1_path = None
             if a_dir1 and os.path.exists(a_dir1):
@@ -1369,6 +1650,11 @@ class FFmpegUltimateTool:
                     if os.path.exists(temp):
                         a1_path = temp
                         break
+                # === 补回：如果找不到同名文件，但目录下只有1个音频，则作为全局通用音频 ===
+                if not a1_path:
+                    a1_files = [f for f in os.listdir(a_dir1) if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']]
+                    if len(a1_files) == 1:
+                        a1_path = os.path.join(a_dir1, a1_files[0])
                         
             # 智能匹配BGM
             a2_path = None
@@ -1378,6 +1664,11 @@ class FFmpegUltimateTool:
                     if os.path.exists(temp):
                         a2_path = temp
                         break
+                # === 补回：如果找不到同名文件，但目录下只有1个音频，则作为全局通用音频 ===
+                if not a2_path:
+                    a2_files = [f for f in os.listdir(a_dir2) if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']]
+                    if len(a2_files) == 1:
+                        a2_path = os.path.join(a_dir2, a2_files[0])
 
             # 智能匹配字幕
             s_path = None
@@ -1422,7 +1713,11 @@ class FFmpegUltimateTool:
 
             fc_parts = []
             v_out = "0:v:0?"
-            a_out = "0:a:0?"
+            # === 核心修复：严格遵照勾选框决定原声去留 ===
+            if self.m_keep_orig_audio.get():
+                a_out = "0:a:0?"
+            else:
+                a_out = ""  # 只要没勾选，默认剥离/静音原声
 
             # -- 智能分辨率缩放 --
             scale_filter = ""
@@ -1471,12 +1766,35 @@ class FFmpegUltimateTool:
             # -- 复杂音频处理与互斥策略 --
             def get_vol_mult(vol_str):
                 if "静音" in vol_str: return "0.0"
-                return str(float(vol_str.replace("%", "").strip()) / 100.0)
+                
+                # 提取用户输入的百分比数字
+                pct_val = float(vol_str.replace("%", "").strip())
+                
+                if pct_val == 0: return "0.0"
+                if pct_val == 100: return "1.0"
+                
+                # === 核心修改：声学心理感知对数映射 ===
+                # 听觉规律：感知响度翻倍或减半，对应物理衰减/增益约 10dB
+                # 1. 计算感知 dB 值：以 100% 为基准 (0dB)，根据输入比例计算对应 dB
+                db_val = 10 * math.log2(pct_val / 100.0)
+                
+                # 2. 将 dB 值转换为 FFmpeg 真正需要的线性振幅倍数 (Amplitude Multiplier)
+                # 物理公式：倍数 = 10 ^ (dB / 20)
+                mult = 10 ** (db_val / 20.0)
+                
+                return f"{mult:.4f}"
 
             mode = self.m_audio_mode.get()
             vol_o = get_vol_mult(self.m_orig_vol.get())
             vol_v = get_vol_mult(self.m_voice_vol.get())
             vol_b = get_vol_mult(self.m_bgm_vol.get())
+
+
+            # === 新增：获取并解析各轨道声道设置 (将直接调用 aformat 无损转换/拷贝) ===
+            ch_map = {"双声道": "aformat=channel_layouts=stereo", "单声道": "aformat=channel_layouts=mono"}
+            ch_o_filter = ch_map.get(self.m_orig_ch.get(), "")
+            ch_v_filter = ch_map.get(self.m_voice_ch.get(), "")
+            ch_b_filter = ch_map.get(self.m_bgm_ch.get(), "")
 
             has_a1 = bool(a1_path)
             has_a2 = bool(a2_path)
@@ -1489,46 +1807,123 @@ class FFmpegUltimateTool:
                 
             active_in_filter_count = int(has_a0_in_filter) + int(has_a1) + int(has_a2)
 
+            # 获取视频精准时长以严格限制输出，防止时长增加
+            dur_v = self.get_video_duration(v_path)
+            
+            # 解析音频偏移与拉伸比例
+            offset_val = 0
+            force_tempo = False
+            tempo_str = ""
+            
+            if mode != 3: 
+                try: offset_val = int(self.m_audio_offset.get().strip())
+                except: pass
+                force_tempo = self.m_force_tempo.get()
+                
+                # 若需要拉伸，通过 ffmpeg 的 atempo 级联滤镜计算速率
+                if force_tempo and dur_v > 0:
+                    dur_a = 0
+                    if has_a1: dur_a = self.get_video_duration(a1_path)
+                    elif has_a2: dur_a = self.get_video_duration(a2_path)
+                    
+                    if dur_a > 0:
+                        ratio = dur_a / dur_v 
+                        atempos = []
+                        temp_r = ratio
+                        while temp_r > 2.0: 
+                            atempos.append("atempo=2.0")
+                            temp_r /= 2.0
+                        while temp_r < 0.5: 
+                            atempos.append("atempo=0.5")
+                            temp_r /= 0.5
+                        atempos.append(f"atempo={temp_r:.4f}")
+                        tempo_str = ",".join(atempos)
+
             if num_ext_audio > 0:
+                # 获取用户设定的目标 LUFS 标准 (默认 -24.0 广播标准)
+                try: target_lufs = float(self.m_target_lufs.get())
+                except: target_lufs = -24.0
+
                 if active_in_filter_count == 1:
-                    # 只有一条外部音轨，且没有勾选保留原音轨混音
+                    # 只有一条外部音轨
                     idx = f"{v_idx}:a:0" if has_a1 else f"{b_idx}:a:0"
                     vol = vol_v if has_a1 else vol_b
+                    ch_filter = ch_v_filter if has_a1 else ch_b_filter
                     
-                    if mode == 3: # 选项3: 保持原始单轨(无损拷贝)
+                    if mode == 3: # 无损直接映射
                         a_out = idx
-                    else: # 选项1或2: 降级为手动音量应用(取消loudnorm防止单轨过度放大产生底噪)
-                        fc_parts.append(f"[{idx}]volume={vol}[aout]")
+                    else:
+                        a_chain = []
+                        # 方案一：率先在源头切入独立标准化，带上设定的绝对标准 LUFS
+                        if mode == 4: a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
+                        
+                        # === 新增：在标准化后应用指定的声道调整滤镜 ===
+                        if ch_filter: a_chain.append(ch_filter)
+                        
+                        a_chain.append(f"volume={vol}")
+                        if offset_val > 0: a_chain.append(f"adelay={offset_val}|{offset_val}")
+                        elif offset_val < 0: a_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
+                        if force_tempo and tempo_str: a_chain.append(tempo_str)
+                        
+                        if mode == 2: a_chain.append("loudnorm") 
+                        
+                        a_filter = ",".join(a_chain)
+                        fc_parts.append(f"[{idx}]{a_filter}[aout]")
                         a_out = "[aout]"
 
                 else: # active_in_filter_count >= 2
                     mix_inputs = []
+                    # 【核心修改：为每一条音轨建立独立的“标准化(指定LUFS) -> 声道修整 -> 对数百分比缩放 -> 偏移拉伸”微型加工流水线】
                     if has_a0_in_filter:
-                        fc_parts.append(f"[0:a:0]volume={vol_o}[a0_vol]")
+                        a0_chain = []
+                        if mode == 4: a0_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
+                        if ch_o_filter: a0_chain.append(ch_o_filter) # 提前调整通道
+                        a0_chain.append(f"volume={vol_o}")
+                        fc_parts.append(f"[0:a:0]{','.join(a0_chain)}[a0_vol]")
                         mix_inputs.append("[a0_vol]")
+                        
                     if has_a1:
-                        fc_parts.append(f"[{v_idx}:a:0]volume={vol_v}[a1_vol]")
+                        a1_chain = []
+                        if mode == 4: a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
+                        if ch_v_filter: a1_chain.append(ch_v_filter) # 提前调整通道
+                        a1_chain.append(f"volume={vol_v}")
+                        if offset_val > 0: a1_chain.append(f"adelay={offset_val}|{offset_val}")
+                        elif offset_val < 0: a1_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
+                        if force_tempo and tempo_str: a1_chain.append(tempo_str)
+                        fc_parts.append(f"[{v_idx}:a:0]{','.join(a1_chain)}[a1_vol]")
                         mix_inputs.append("[a1_vol]")
+                        
                     if has_a2:
-                        fc_parts.append(f"[{b_idx}:a:0]volume={vol_b}[a2_vol]")
+                        a2_chain = []
+                        if mode == 4: a2_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
+                        if ch_b_filter: a2_chain.append(ch_b_filter) # 提前调整通道
+                        a2_chain.append(f"volume={vol_b}")
+                        if offset_val > 0: a2_chain.append(f"adelay={offset_val}|{offset_val}")
+                        elif offset_val < 0: a2_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
+                        if force_tempo and tempo_str: a2_chain.append(tempo_str)
+                        fc_parts.append(f"[{b_idx}:a:0]{','.join(a2_chain)}[a2_vol]")
                         mix_inputs.append("[a2_vol]")
                         
                     mix_str = "".join(mix_inputs)
                     
-                    if mode == 2: # 自动 loudnorm 平衡
-                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest[amix]")
+                    if mode == 2: # 自动 loudnorm (先混合所有声音，再对整体进行防爆音平衡)
+                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[amix]")
                         fc_parts.append(f"[amix]loudnorm[aout]")
                         a_out = "[aout]"
-                    else: # 手动音量混合 (即使选了选项3，对于多轨也智能回退到此模式)
-                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest[aout]")
+                    else: # 模式 1 (纯手工) 或 模式 4 (单轨独立平衡后缩放)
+                        # 因为前面已经做过标准化和按百分比的对数缩放，这里只需原样纯净混合即可
+                        fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[aout]")
                         a_out = "[aout]"
 
+            # === 最核心的修复：把误删的流映射与滤镜挂载代码补回来！ ===
             if fc_parts:
                 cmd.extend(["-filter_complex", ";".join(fc_parts)])
-                cmd.extend(["-map", v_out, "-map", a_out])
+                cmd.extend(["-map", v_out])
+                if a_out: cmd.extend(["-map", a_out]) # 只有包含有效音频流时才映射
             else:
                 # 没有任何滤镜介入，直接以原生流输入防报错
-                cmd.extend(["-map", "0:v:0?", "-map", a_out])
+                cmd.extend(["-map", "0:v:0?"])
+                if a_out: cmd.extend(["-map", a_out])
 
             # -- 视频编码逻辑 --
             cmd.extend(["-c:v", encoder])
@@ -1537,10 +1932,11 @@ class FFmpegUltimateTool:
                     cmd.extend(["-b:v", f"{self.m_bitrate.get()}k"])
                 elif self.m_quality_mode.get() == 2:
                     q = self.m_crf.get()
-                    if encoder == "libx264": cmd.extend(["-crf", q])
-                    elif encoder == "h264_nvenc": cmd.extend(["-cq", q])
-                    elif encoder == "h264_amf": cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
-                    elif encoder == "h264_qsv": cmd.extend(["-global_quality", q])
+                    if "libx26" in encoder: cmd.extend(["-crf", q])
+                    elif "nvenc" in encoder: cmd.extend(["-cq", q])
+                    elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
+                    elif "qsv" in encoder: cmd.extend(["-global_quality", q])
+                    elif "videotoolbox" in encoder: cmd.extend(["-q:v", q])
                     else: cmd.extend(["-crf", q])
                 elif self.m_quality_mode.get() == 3:
                     # 动态探测原视频流码率
@@ -1549,6 +1945,19 @@ class FFmpegUltimateTool:
                         cmd.extend(["-b:v", orig_v_bitrate])
                     else:
                         cmd.extend(["-crf", "28"]) # 提取失败则回退默认
+                elif self.m_quality_mode.get() == 4:
+                    # === 智能限流核心逻辑 ===
+                    try: target_br = int(self.m_max_bitrate.get())
+                    except: target_br = 3000
+                    orig_v_bitrate = self.get_video_stream_bitrate(v_path)
+                    if orig_v_bitrate:
+                        orig_br_kbps = int(orig_v_bitrate) // 1000
+                        if orig_br_kbps > target_br:
+                            cmd.extend(["-b:v", f"{target_br}k"])
+                        else:
+                            cmd.extend(["-b:v", orig_v_bitrate])
+                    else:
+                        cmd.extend(["-b:v", f"{target_br}k"])
                 
                 preset_val = self.m_preset.get()
                 if encoder == "h264_amf":
@@ -1566,20 +1975,27 @@ class FFmpegUltimateTool:
                     cmd.extend(["-threads", threads_val])
             
             # -- 音频编码策略逻辑 --
-            if active_in_filter_count == 1 and mode == 3:
+            if not a_out:
+                pass # 如果没有输出音频（a_out为空），则彻底跳过音频编码参数配置
+            elif active_in_filter_count == 1 and mode == 3:
                 # 只有单条独立音轨，且选择了保持原始拷贝
                 active_path = a1_path if has_a1 else (a2_path if has_a2 else "")
                 # 智能拦截：WAV/FLAC等无损格式直封入视频会导致严重的兼容性爆音(不支持的IPCM)
                 if active_path and active_path.lower().endswith(('.wav', '.flac', '.pcm')):
-                    cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                    audio_br = self.m_audio_bitrate_var.get().strip()
+                    cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
                 else:
                     cmd.extend(["-c:a", "copy"])
             elif num_ext_audio > 0 or (num_ext_audio == 0 and not s_path):
                 # 如果有多轨混合、有滤镜，或需要重新压缩防崩
-                cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                audio_br = self.m_audio_bitrate_var.get().strip()
+                cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
             else:
                 # 仅有视频+字幕，默认无损保留原视频音频
                 cmd.extend(["-c:a", "copy"])
+            # === 最强保险：利用 -t 参数严格强制视频在原始时长处停止，斩断因音频推后或超长产生的所有尾巴 ===
+            if dur_v > 0 and (self.m_force_crop.get() or self.m_force_tempo.get()):
+                cmd.extend(["-t", str(dur_v)])
                 
             cmd.append(out_file)
 
@@ -1715,9 +2131,17 @@ class FFmpegUltimateTool:
         ttk.Entry(self.frame_sm_split, textvariable=self.sm_split_out2).grid(row=2, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_split, text="浏览...", command=lambda: self.browse_dir(self.sm_split_out2)).grid(row=2, column=2)
 
+        # 新增：拆分计算方向选择
+        f_split_dir = ttk.Frame(self.frame_sm_split)
+        f_split_dir.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5,0))
+        ttk.Label(f_split_dir, text="计算方向:").pack(side="left", padx=(0, 5))
+        ttk.Radiobutton(f_split_dir, text="正序 (从头开始计算)", variable=self.sm_split_dir, value=1).pack(side="left", padx=(0, 15))
+        ttk.Radiobutton(f_split_dir, text="倒序 (从尾部往前推算)", variable=self.sm_split_dir, value=2).pack(side="left")
+
+        # 原有的时间/百分比选择（下移到了 row=4）
         f_split_mode = ttk.Frame(self.frame_sm_split)
-        f_split_mode.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5,0))
-        ttk.Radiobutton(f_split_mode, text="按时间节点拆分 (HH:MM:SS):", variable=self.sm_split_mode, value=1, command=self.update_sm_ui_state).pack(side="left")
+        f_split_mode.grid(row=4, column=0, columnspan=3, sticky="w", pady=(5,0))
+        ttk.Radiobutton(f_split_mode, text="按时间节点拆分 (HH:MM:SS.xxx):", variable=self.sm_split_mode, value=1, command=self.update_sm_ui_state).pack(side="left")
         self.entry_sm_time = ttk.Entry(f_split_mode, textvariable=self.sm_split_time, width=10)
         self.entry_sm_time.pack(side="left", padx=(0, 20))
         ttk.Radiobutton(f_split_mode, text="按百分比拆分(%):", variable=self.sm_split_mode, value=2, command=self.update_sm_ui_state).pack(side="left")
@@ -1809,29 +2233,37 @@ class FFmpegUltimateTool:
 
         self.sm_rb_q1 = ttk.Radiobutton(frame_q_sm, text="固定:", variable=self.sm_quality_mode, value=1)
         self.sm_rb_q1.pack(side="left")
-        self.sm_entry_br = ttk.Entry(frame_q_sm, textvariable=self.sm_bitrate, width=6)
-        self.sm_entry_br.pack(side="left", padx=(0, 10))
+        self.sm_entry_br = ttk.Entry(frame_q_sm, textvariable=self.sm_bitrate, width=5)
+        self.sm_entry_br.pack(side="left", padx=(0, 2))
+
+        self.sm_rb_q4 = ttk.Radiobutton(frame_q_sm, text="上限:", variable=self.sm_quality_mode, value=4)
+        self.sm_rb_q4.pack(side="left")
+        self.sm_entry_max_br = ttk.Entry(frame_q_sm, textvariable=self.sm_max_bitrate, width=5)
+        self.sm_entry_max_br.pack(side="left", padx=(0, 2))
 
         self.sm_rb_q2 = ttk.Radiobutton(frame_q_sm, text="CRF:", variable=self.sm_quality_mode, value=2)
         self.sm_rb_q2.pack(side="left")
-        self.sm_entry_crf = ttk.Entry(frame_q_sm, textvariable=self.sm_crf, width=4)
-        self.sm_entry_crf.pack(side="left", padx=(0, 10))
+        self.sm_entry_crf = ttk.Entry(frame_q_sm, textvariable=self.sm_crf, width=3)
+        self.sm_entry_crf.pack(side="left", padx=(0, 2))
 
         self.sm_rb_q3 = ttk.Radiobutton(frame_q_sm, text="保原码率", variable=self.sm_quality_mode, value=3)
-        self.sm_rb_q3.pack(side="left", padx=(0, 15))
+        self.sm_rb_q3.pack(side="left", padx=(0, 5))
 
         ttk.Label(frame_q_sm, text="FPS:").pack(side="left")
-        self.sm_cb_fps = ttk.Combobox(frame_q_sm, textvariable=self.sm_fps_var, values=self.fps_options, state="readonly", width=5)
-        self.sm_cb_fps.pack(side="left", padx=(0, 10))
+        self.sm_cb_fps = ttk.Combobox(frame_q_sm, textvariable=self.sm_fps_var, values=self.fps_options, state="readonly", width=4)
+        self.sm_cb_fps.pack(side="left", padx=(0, 5))
 
         ttk.Label(frame_q_sm, text="预设:").pack(side="left")
-        self.sm_cb_preset = ttk.Combobox(frame_q_sm, textvariable=self.sm_preset, values=["fast", "medium", "slow"], state="readonly", width=7)
-        self.sm_cb_preset.pack(side="left", padx=(0, 10))
+        self.sm_cb_preset = ttk.Combobox(frame_q_sm, textvariable=self.sm_preset, values=["fast", "medium", "slow"], state="readonly", width=6)
+        self.sm_cb_preset.pack(side="left", padx=(0, 5))
 
         ttk.Label(frame_q_sm, text="线程:").pack(side="left")
-        self.sm_cb_threads = ttk.Combobox(frame_q_sm, textvariable=self.sm_threads_var, values=self.threads_options, state="readonly", width=4)
-        self.sm_cb_threads.pack(side="left")
-        # === 替换结束 ===
+        self.sm_cb_threads = ttk.Combobox(frame_q_sm, textvariable=self.sm_threads_var, values=self.threads_options, state="readonly", width=3)
+        self.sm_cb_threads.pack(side="left", padx=(0, 5))
+
+        ttk.Label(frame_q_sm, text="音码:").pack(side="left")
+        self.sm_cb_audio_br = ttk.Combobox(frame_q_sm, textvariable=self.sm_audio_bitrate_var, values=["保持原始", "128", "192", "256", "320"], width=6)
+        self.sm_cb_audio_br.pack(side="left")
 
         # 5. 底部操作区
         frame_bottom_sm = ttk.Frame(self.tab_split_merge, padding=(10, 10))
@@ -1868,7 +2300,7 @@ class FFmpegUltimateTool:
         t_state_e = "disabled" if self.sm_copy_stream.get() else "normal"
             
         self.sm_cb_fmt.config(state=t_state_c)
-        self.sm_cb_vcodec.config(state=t_state_c) # 新增这一行：互斥控制编码下拉框
+        self.sm_cb_vcodec.config(state=t_state_c) 
         self.sm_cb_enc.config(state=t_state_c)
         self.sm_rb_res1.config(state=t_state_e)
         self.sm_rb_res2.config(state=t_state_e)
@@ -1876,11 +2308,14 @@ class FFmpegUltimateTool:
         self.sm_rb_q1.config(state=t_state_e)
         self.sm_rb_q2.config(state=t_state_e)
         self.sm_rb_q3.config(state=t_state_e)
+        self.sm_rb_q4.config(state=t_state_e) # 新增：限码单选框互斥
         self.sm_entry_br.config(state=t_state_e)
         self.sm_entry_crf.config(state=t_state_e)
+        self.sm_entry_max_br.config(state=t_state_e) # 新增：限码输入框互斥
         self.sm_cb_fps.config(state=t_state_c)
         self.sm_cb_preset.config(state=t_state_c)
         self.sm_cb_threads.config(state=t_state_c)
+        self.sm_cb_audio_br.config(state=t_state_c) 
         self.update_sm_res_ui()
 
     def on_sm_prop_w_check(self):
@@ -1936,12 +2371,31 @@ class FFmpegUltimateTool:
             else: return float(parts[0])
         except: return -1.0
 
-    def get_video_duration(self, filepath):
+    def get_video_codec(self, filepath):
+        """核心辅助：智能获取视频流真实的编码格式"""
         try:
-            cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', filepath]
+            cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v:0', filepath]
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
-            return float(data['format']['duration'])
+            if 'streams' in data and len(data['streams']) > 0:
+                codec_name = data['streams'][0].get('codec_name', '').lower()
+                if codec_name in ['hevc', 'h265']:
+                    return "H.265"
+        except: pass
+        return "H.264" # 探测失败或其它格式时，默认回退到兼容性最好的 H.264
+
+    def get_video_duration(self, filepath):
+        try:
+            cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', filepath]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            data = json.loads(result.stdout)
+            if 'format' in data and 'duration' in data['format']:
+                return float(data['format']['duration'])
+            # 兼容某些没有 format 层级 duration 的文件 (例如 TS/某些MKV)
+            for stream in data.get('streams', []):
+                if 'duration' in stream:
+                    return float(stream['duration'])
+            return 0.0
         except: return 0.0
 
     def start_sm(self):
@@ -1978,22 +2432,29 @@ class FFmpegUltimateTool:
     def build_sm_codec_args(self, cmd, in_file):
         is_copy = self.sm_copy_stream.get()
         
-        vcodec = self.sm_encoder_var.get()
+        vcodec = self.sm_codec_var.get()
         hw_choice = self.sm_encoder_var.get()
-        if vcodec == "保持原始" or hw_choice == "纯转封装 (极速)":
+        
+        if is_copy or hw_choice == "纯转封装 (极速)":
             encoder = "copy"
-        elif vcodec == "H.265":
-            if "NVIDIA" in hw_choice: encoder = "hevc_nvenc"
-            elif "AMD" in hw_choice: encoder = "hevc_amf"
-            elif "Intel" in hw_choice: encoder = "hevc_qsv"
-            else: encoder = "libx265"
-        else: # 默认 H.264
-            if "NVIDIA" in hw_choice: encoder = "h264_nvenc"
-            elif "AMD" in hw_choice: encoder = "h264_amf"
-            elif "Intel" in hw_choice: encoder = "h264_qsv"
-            else: encoder = "libx264"
+        else:
+            if vcodec == "保持原始":
+                vcodec = self.get_video_codec(in_file) # 动态探测！
+                
+            if vcodec == "H.265":
+                if "NVIDIA" in hw_choice: encoder = "hevc_nvenc"
+                elif "AMD" in hw_choice: encoder = "hevc_amf"
+                elif "Intel" in hw_choice: encoder = "hevc_qsv"
+                elif "Apple" in hw_choice: encoder = "hevc_videotoolbox"
+                else: encoder = "libx265"
+            else: # 默认 H.264
+                if "NVIDIA" in hw_choice: encoder = "h264_nvenc"
+                elif "AMD" in hw_choice: encoder = "h264_amf"
+                elif "Intel" in hw_choice: encoder = "h264_qsv"
+                elif "Apple" in hw_choice: encoder = "h264_videotoolbox"
+                else: encoder = "libx264"
 
-        if is_copy:
+        if encoder == "copy":
             cmd.extend(["-c:v", "copy"])
         else:
             cmd.extend(["-c:v", encoder])
@@ -2014,15 +2475,29 @@ class FFmpegUltimateTool:
             if qm == 1: cmd.extend(["-b:v", f"{self.sm_bitrate.get()}k"])
             elif qm == 2:
                 q = self.sm_crf.get()
-                if encoder == "libx264": cmd.extend(["-crf", q])
-                elif encoder == "h264_nvenc": cmd.extend(["-cq", q])
-                elif encoder == "h264_amf": cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
-                elif encoder == "h264_qsv": cmd.extend(["-global_quality", q])
+                if "libx26" in encoder: cmd.extend(["-crf", q])
+                elif "nvenc" in encoder: cmd.extend(["-cq", q])
+                elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
+                elif "qsv" in encoder: cmd.extend(["-global_quality", q])
+                elif "videotoolbox" in encoder: cmd.extend(["-q:v", q])
                 else: cmd.extend(["-crf", q])
             elif qm == 3:
                 orig_v_bitrate = self.get_video_stream_bitrate(in_file)
                 if orig_v_bitrate: cmd.extend(["-b:v", orig_v_bitrate])
                 else: cmd.extend(["-crf", "28"])
+            elif qm == 4:
+                # === 智能限流核心逻辑 ===
+                try: target_br = int(self.sm_max_bitrate.get())
+                except: target_br = 3000
+                orig_v_bitrate = self.get_video_stream_bitrate(in_file)
+                if orig_v_bitrate:
+                    orig_br_kbps = int(orig_v_bitrate) // 1000
+                    if orig_br_kbps > target_br:
+                        cmd.extend(["-b:v", f"{target_br}k"])
+                    else:
+                        cmd.extend(["-b:v", orig_v_bitrate])
+                else:
+                    cmd.extend(["-b:v", f"{target_br}k"])
                 
             # 帧率与预设
             if self.sm_fps_var.get() != "保持原始": cmd.extend(["-r", self.sm_fps_var.get()])
@@ -2038,7 +2513,15 @@ class FFmpegUltimateTool:
         elif is_copy:
             cmd.extend(["-c:a", "copy"])
         else:
-            cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+            audio_br = self.sm_audio_bitrate_var.get().strip()
+            if audio_br == "保持原始":
+                orig_a_br = self.get_audio_stream_bitrate(in_file)
+                if orig_a_br:
+                    cmd.extend(["-c:a", "aac", "-b:a", orig_a_br])
+                else:
+                    cmd.extend(["-c:a", "aac", "-b:a", "192k"]) # 兜底
+            else:
+                cmd.extend(["-c:a", "aac", "-b:a", f"{audio_br}k"])
 
     def run_ffmpeg_sm(self, cmd, label):
         self.root.after(0, self.sm_status_text.set, f"正在处理: {label}")
@@ -2079,6 +2562,7 @@ class FFmpegUltimateTool:
                 
                 for f_name in files:
                     if self.is_cancelled: break
+                
                     base_name, ext = os.path.splitext(f_name)
                     in_path = os.path.join(in_dir, f_name)
                     dur = self.get_video_duration(in_path)
@@ -2088,8 +2572,25 @@ class FFmpegUltimateTool:
                     else:
                         pct = float(self.sm_split_pct.get()) / 100.0
                         split_sec = dur * pct
+                    
+                    # === 核心逻辑：若是倒序，从总时长中减去设定时间 ===
+                    if self.sm_split_dir.get() == 2:
+                        split_sec = dur - split_sec
                         
-                    if split_sec <= 0 or dur <= 0 or split_sec >= dur: continue
+                    # === 核心修复：放宽防呆条件，防止正常文件被错误跳过 ===
+                    if split_sec <= 0: 
+                        print(f"跳过 {f_name}: 拆分时间点不能为 0，请检查设定的时间")
+                        continue
+                        
+                    if dur > 0 and split_sec >= dur:
+                        print(f"跳过 {f_name}: 拆分时间点大于等于视频总时长")
+                        continue
+                        
+                    if dur <= 0 and (self.sm_split_mode.get() == 2 or self.sm_split_dir.get() == 2):
+                        # 只有在必须用到总时长来做数学计算时，才因为读不到时长而跳过
+                        print(f"跳过 {f_name}: 无法获取视频原时长，无法计算倒序或百分比")
+                        continue
+
                     out_ext = ext if is_copy or out_fmt == "保持原格式" else "." + out_fmt.lower()
                     
                     # 前半部分
@@ -2099,13 +2600,14 @@ class FFmpegUltimateTool:
                     cmd1.append(out1_path)
                     self.run_ffmpeg_sm(cmd1, f_name + " (前半段)")
                     if self.is_cancelled: break
-                    
+                   
                     # 后半部分
                     out2_path = os.path.join(out2_dir, base_name + out_ext)
                     cmd2 = [self.ffmpeg_bin, "-y", "-ss", str(split_sec), "-i", in_path]
                     self.build_sm_codec_args(cmd2, in_path)
                     cmd2.append(out2_path)
                     self.run_ffmpeg_sm(cmd2, f_name + " (后半段)")
+                    
                     processed_count += 1
             
             else: # === 合并逻辑 ===
@@ -2153,6 +2655,25 @@ class FFmpegUltimateTool:
         self.sm_status_text.set(message)
         if success: messagebox.showinfo("完成", message)
         else: messagebox.showwarning("提示", message)
+        if not self.rv_rules: return True
+        matched_any = False
+        matched_all = True
+        for rule in self.rv_rules:
+            field_key = rule['field']
+            if field_key == "字幕文本": field_key = "字幕文本 (Text)" 
+            elif field_key == "样式/角色(仅ASS)": field_key = "全部列综合"
+            target = field_data.get(field_key, "")
+            is_match = False
+            if rule['mode'] == '包含': is_match = rule['val'] in target
+            elif rule['mode'] == '等于': is_match = rule['val'] == target
+            elif rule['mode'] == '正则匹配':
+                try: 
+                    # 【核心修复】加入 re.DOTALL，让 .* 能够跨越 SRT 中的换行符，实现真正的“只要包含就处理”
+                    if re.search(rule['val'], target, re.DOTALL): is_match = True
+                except: pass
+            if is_match: matched_any = True
+            else: matched_all = False
+        return matched_any if self.rv_rule_logic.get() == 1 else matched_all
 
 if __name__ == "__main__":
     root = tk.Tk()

@@ -96,6 +96,7 @@ class FFmpegUltimateTool:
         self.root.geometry("845x655")
         self.root.resizable(True, True)
         self.root.minsize(600, 600)
+        
 
         style = ttk.Style()
         if "vista" in style.theme_names():
@@ -1141,6 +1142,11 @@ class FFmpegUltimateTool:
         self.m_orig_ch = tk.StringVar(value="保持原始")
         self.m_voice_ch = tk.StringVar(value="双声道") # 默认干声常为单声道，将其默认设为双声道无损克隆
         self.m_bgm_ch = tk.StringVar(value="保持原始")
+
+        # === 新增：各轨道单独的降噪控制 ===
+        self.m_dn_orig = tk.BooleanVar(value=False)
+        self.m_dn_voice = tk.BooleanVar(value=False)
+        self.m_dn_bgm = tk.BooleanVar(value=False)
         
         self.m_font_name = tk.StringVar()
         self.m_font_size = tk.StringVar(value="24")
@@ -1217,25 +1223,39 @@ class FFmpegUltimateTool:
         self.m_cb_bch = ttk.Combobox(frame_chs, textvariable=self.m_bgm_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
         self.m_cb_bch.pack(side="left")
 
+        # === 新增：降噪设置框 (紧贴在声道下方) ===
+        frame_dn = ttk.Frame(lf_left)
+        frame_dn.grid(row=3, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
+        
+        ttk.Label(frame_dn, text="降噪:").pack(side="left")
+        self.m_chk_dn_o = ttk.Checkbutton(frame_dn, text="原声", variable=self.m_dn_orig)
+        self.m_chk_dn_o.pack(side="left", padx=(0, 8))
+        
+        self.m_chk_dn_v = ttk.Checkbutton(frame_dn, text="干声", variable=self.m_dn_voice)
+        self.m_chk_dn_v.pack(side="left", padx=(0, 8))
+        
+        self.m_chk_dn_b = ttk.Checkbutton(frame_dn, text="BGM", variable=self.m_dn_bgm)
+        self.m_chk_dn_b.pack(side="left")
+
         # 以下原件的 row 行号全部自动顺延 +1
         chk_keep = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
-        chk_keep.grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        chk_keep.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 2))
 
-        ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
         
         f_mode4 = ttk.Frame(lf_left)
-        f_mode4.grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        f_mode4.grid(row=6, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Radiobutton(f_mode4, text="独立标准化各音轨后再混合", variable=self.m_audio_mode, value=4, command=self.update_m_audio_ui).pack(side="left")
         
         ttk.Label(f_mode4, text=" 目标标准(LUFS):").pack(side="left", padx=(10, 2))
-        self.m_target_lufs = tk.StringVar(value="-14.0")
+        self.m_target_lufs = tk.StringVar(value="-12.0")
         self.m_spin_lufs = ttk.Spinbox(f_mode4, from_=-70.0, to=-5.0, increment=1.0, textvariable=self.m_target_lufs, width=6)
         self.m_spin_lufs.pack(side="left")
 
-        ttk.Radiobutton(lf_left, text="保持原始音频流(单轨使用)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 5))
+        ttk.Radiobutton(lf_left, text="保持原始音频流(单轨使用)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=7, column=0, columnspan=2, sticky="w", pady=(2, 5))
         
         f_time = ttk.Frame(lf_left)
-        f_time.grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
+        f_time.grid(row=8, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Label(f_time, text="音频偏移(ms):").pack(side="left")
         self.m_entry_offset = ttk.Entry(f_time, textvariable=self.m_audio_offset, width=5)
         self.m_entry_offset.pack(side="left", padx=(2, 8))
@@ -1244,13 +1264,13 @@ class FFmpegUltimateTool:
         self.m_cb_crop = ttk.Checkbutton(f_time, text="直接裁剪尾巴", variable=self.m_force_crop, command=self.on_m_crop_check)
         self.m_cb_crop.pack(side="left")
 
-        ttk.Separator(lf_left, orient='horizontal').grid(row=8, column=0, columnspan=2, sticky="we", pady=5)
-        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=9, column=0, columnspan=2, sticky="w")
+        ttk.Separator(lf_left, orient='horizontal').grid(row=9, column=0, columnspan=2, sticky="we", pady=5)
+        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=10, column=0, columnspan=2, sticky="w")
         
-        ttk.Label(lf_left, text="SRT字体:").grid(row=10, column=0, sticky="w", pady=2)
+        ttk.Label(lf_left, text="SRT字体:").grid(row=11, column=0, sticky="w", pady=2)
         
         frame_font = ttk.Frame(lf_left)
-        frame_font.grid(row=10, column=1, sticky="w")
+        frame_font.grid(row=11, column=1, sticky="w")
         font_families = list(tkfont.families())
         font_families.sort()
         default_font = "黑体" if "黑体" in font_families else ("SimHei" if "SimHei" in font_families else (font_families[0] if font_families else "Arial"))
@@ -1259,14 +1279,14 @@ class FFmpegUltimateTool:
         self.m_cb_font.pack(side="left")
         ttk.Button(frame_font, text="浏览...", width=6, command=self.browse_font).pack(side="left", padx=(5,0))
         
-        ttk.Label(lf_left, text="SRT大小:").grid(row=11, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=11, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT大小:").grid(row=12, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=12, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT描边:").grid(row=12, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=12, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT描边:").grid(row=13, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=13, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT边距:").grid(row=13, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=13, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT边距:").grid(row=14, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=14, column=1, sticky="w")
 
         # 初始化时触发一次以确认界面排他状态
         self.update_m_audio_ui()
@@ -1465,18 +1485,26 @@ class FFmpegUltimateTool:
             self.m_cb_vvol.config(state="disabled")
             self.m_cb_bvol.config(state="disabled")
 
-        # === 新增：声道控制框互斥锁 ===
-        if mode != 3: # 只要不选“纯转封装拷贝”，且勾选了原声，都允许单独设声道
+        # === 声道与降噪控制框互斥锁 ===
+        if mode != 3: # 只要不选“纯转封装拷贝”，且勾选了原声，都允许单独设声道和降噪
             if self.m_keep_orig_audio.get():
                 self.m_cb_och.config(state="readonly")
+                self.m_chk_dn_o.config(state="normal")
             else:
                 self.m_cb_och.config(state="disabled")
+                self.m_chk_dn_o.config(state="disabled")
+                
             self.m_cb_vch.config(state="readonly")
             self.m_cb_bch.config(state="readonly")
+            self.m_chk_dn_v.config(state="normal")
+            self.m_chk_dn_b.config(state="normal")
         else:
             self.m_cb_och.config(state="disabled")
             self.m_cb_vch.config(state="disabled")
             self.m_cb_bch.config(state="disabled")
+            self.m_chk_dn_o.config(state="disabled")
+            self.m_chk_dn_v.config(state="disabled")
+            self.m_chk_dn_b.config(state="disabled")
 
         # 控制目标响度LUFS输入框的互斥
         if hasattr(self, 'm_spin_lufs'):
@@ -1870,14 +1898,21 @@ class FFmpegUltimateTool:
                     vol = vol_v if has_a1 else vol_b
                     ch_filter = ch_v_filter if has_a1 else ch_b_filter
                     
+                    # 判断当前正在处理的单轨是否被勾选了降噪
+                    dn_enabled = (has_a1 and self.m_dn_voice.get()) or (has_a2 and self.m_dn_bgm.get())
+                    
                     if mode == 3: # 无损直接映射
                         a_out = idx
                     else:
                         a_chain = []
+                        
+                        # === 新增：将傅里叶降噪置于滤镜链最顶端 ===
+                        if dn_enabled: a_chain.append("afftdn")
+                        
                         # 方案一：率先在源头切入独立标准化，带上设定的绝对标准 LUFS
                         if mode == 4: a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
                         
-                        # === 新增：在标准化后应用指定的声道调整滤镜 ===
+                        # 在标准化后应用指定的声道调整滤镜
                         if ch_filter: a_chain.append(ch_filter)
                         
                         a_chain.append(f"volume={vol}")
@@ -1893,19 +1928,21 @@ class FFmpegUltimateTool:
 
                 else: # active_in_filter_count >= 2
                     mix_inputs = []
-                    # 【核心修改：为每一条音轨建立独立的“标准化(指定LUFS) -> 声道修整 -> 对数百分比缩放 -> 偏移拉伸”微型加工流水线】
+                    # 【核心修改：为每一条音轨建立独立的“降噪 -> 标准化 -> 声道修整 -> 缩放 -> 偏移拉伸”微型加工流水线】
                     if has_a0_in_filter:
                         a0_chain = []
+                        if self.m_dn_orig.get(): a0_chain.append("afftdn") # 顶端降噪
                         if mode == 4: a0_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
-                        if ch_o_filter: a0_chain.append(ch_o_filter) # 提前调整通道
+                        if ch_o_filter: a0_chain.append(ch_o_filter)
                         a0_chain.append(f"volume={vol_o}")
                         fc_parts.append(f"[0:a:0]{','.join(a0_chain)}[a0_vol]")
                         mix_inputs.append("[a0_vol]")
                         
                     if has_a1:
                         a1_chain = []
+                        if self.m_dn_voice.get(): a1_chain.append("afftdn") # 顶端降噪
                         if mode == 4: a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
-                        if ch_v_filter: a1_chain.append(ch_v_filter) # 提前调整通道
+                        if ch_v_filter: a1_chain.append(ch_v_filter) 
                         a1_chain.append(f"volume={vol_v}")
                         if offset_val > 0: a1_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a1_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
@@ -1915,8 +1952,9 @@ class FFmpegUltimateTool:
                         
                     if has_a2:
                         a2_chain = []
+                        if self.m_dn_bgm.get(): a2_chain.append("afftdn") # 顶端降噪
                         if mode == 4: a2_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
-                        if ch_b_filter: a2_chain.append(ch_b_filter) # 提前调整通道
+                        if ch_b_filter: a2_chain.append(ch_b_filter) 
                         a2_chain.append(f"volume={vol_b}")
                         if offset_val > 0: a2_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a2_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")

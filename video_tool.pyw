@@ -1137,25 +1137,37 @@ class FFmpegUltimateTool:
 
         # === 新增：严格匹配模式 ===
         self.m_strict_match = tk.BooleanVar(value=False)
+
+        self.m_font_name = tk.StringVar()
+        self.m_font_size = tk.StringVar(value="24")
+        self.m_font_outline = tk.StringVar(value="1")
+        self.m_font_marginv = tk.StringVar(value="10")
+        
+        # === 补回被误删的底部进度条和状态文本变量！ ===
+        self.m_progress_var = tk.DoubleVar(value=0)
+        self.m_status_text = tk.StringVar(value="等待开始...")
+        self.is_merge_processing = False
         
         # === 新增：各轨道单独的声道设置 ===
         self.m_orig_ch = tk.StringVar(value="保持原始")
         self.m_voice_ch = tk.StringVar(value="双声道") # 默认干声常为单声道，将其默认设为双声道无损克隆
         self.m_bgm_ch = tk.StringVar(value="保持原始")
 
-        # === 新增：各轨道单独的降噪控制 ===
+        # === 各轨道单独的声道设置 ===
+        self.m_orig_ch = tk.StringVar(value="保持原始")
+        self.m_voice_ch = tk.StringVar(value="双声道") 
+        self.m_bgm_ch = tk.StringVar(value="保持原始")
+        
+        # === 新增：各轨道单独的降噪控制与强度调节 ===
         self.m_dn_orig = tk.BooleanVar(value=False)
         self.m_dn_voice = tk.BooleanVar(value=False)
         self.m_dn_bgm = tk.BooleanVar(value=False)
         
-        self.m_font_name = tk.StringVar()
-        self.m_font_size = tk.StringVar(value="24")
-        self.m_font_outline = tk.StringVar(value="1")
-        self.m_font_marginv = tk.StringVar(value="10")
+        self.m_dn_orig_val = tk.StringVar(value="12") # 原声默认降噪12dB
+        self.m_dn_voice_val = tk.StringVar(value="18") # 干声默认降噪18dB (强效防喷麦)
+        self.m_dn_bgm_val = tk.StringVar(value="10") # BGM默认降噪10dB (轻度防吃乐器)
 
-        self.m_progress_var = tk.DoubleVar(value=0)
-        self.m_status_text = tk.StringVar(value="等待开始...")
-        self.is_merge_processing = False
+        self.m_strict_match = tk.BooleanVar(value=False)
 
         # --- 目录选择区 ---
         frame_dir = ttk.Frame(self.tab_merge, padding=(10, 5))
@@ -1223,19 +1235,27 @@ class FFmpegUltimateTool:
         self.m_cb_bch = ttk.Combobox(frame_chs, textvariable=self.m_bgm_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
         self.m_cb_bch.pack(side="left")
 
-        # === 新增：降噪设置框 (紧贴在声道下方) ===
+
+        # === 新增：降噪设置与强度调节框 (紧贴在声道下方) ===
         frame_dn = ttk.Frame(lf_left)
         frame_dn.grid(row=3, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
         
-        ttk.Label(frame_dn, text="降噪:").pack(side="left")
+        ttk.Label(frame_dn, text="降噪强度(dB):").pack(side="left")
+        
         self.m_chk_dn_o = ttk.Checkbutton(frame_dn, text="原声", variable=self.m_dn_orig)
-        self.m_chk_dn_o.pack(side="left", padx=(0, 8))
+        self.m_chk_dn_o.pack(side="left", padx=(0, 2))
+        self.m_spin_dn_o = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_orig_val, width=3)
+        self.m_spin_dn_o.pack(side="left", padx=(0, 8))
         
         self.m_chk_dn_v = ttk.Checkbutton(frame_dn, text="干声", variable=self.m_dn_voice)
-        self.m_chk_dn_v.pack(side="left", padx=(0, 8))
+        self.m_chk_dn_v.pack(side="left", padx=(0, 2))
+        self.m_spin_dn_v = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_voice_val, width=3)
+        self.m_spin_dn_v.pack(side="left", padx=(0, 8))
         
         self.m_chk_dn_b = ttk.Checkbutton(frame_dn, text="BGM", variable=self.m_dn_bgm)
-        self.m_chk_dn_b.pack(side="left")
+        self.m_chk_dn_b.pack(side="left", padx=(0, 2))
+        self.m_spin_dn_b = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_bgm_val, width=3)
+        self.m_spin_dn_b.pack(side="left")
 
         # 以下原件的 row 行号全部自动顺延 +1
         chk_keep = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
@@ -1490,14 +1510,18 @@ class FFmpegUltimateTool:
             if self.m_keep_orig_audio.get():
                 self.m_cb_och.config(state="readonly")
                 self.m_chk_dn_o.config(state="normal")
+                self.m_spin_dn_o.config(state="normal")
             else:
                 self.m_cb_och.config(state="disabled")
                 self.m_chk_dn_o.config(state="disabled")
+                self.m_spin_dn_o.config(state="disabled")
                 
             self.m_cb_vch.config(state="readonly")
             self.m_cb_bch.config(state="readonly")
             self.m_chk_dn_v.config(state="normal")
             self.m_chk_dn_b.config(state="normal")
+            self.m_spin_dn_v.config(state="normal")
+            self.m_spin_dn_b.config(state="normal")
         else:
             self.m_cb_och.config(state="disabled")
             self.m_cb_vch.config(state="disabled")
@@ -1505,6 +1529,9 @@ class FFmpegUltimateTool:
             self.m_chk_dn_o.config(state="disabled")
             self.m_chk_dn_v.config(state="disabled")
             self.m_chk_dn_b.config(state="disabled")
+            self.m_spin_dn_o.config(state="disabled")
+            self.m_spin_dn_v.config(state="disabled")
+            self.m_spin_dn_b.config(state="disabled")
 
         # 控制目标响度LUFS输入框的互斥
         if hasattr(self, 'm_spin_lufs'):
@@ -1684,11 +1711,6 @@ class FFmpegUltimateTool:
                     if os.path.exists(temp):
                         a1_path = temp
                         break
-                # === 补回：如果找不到同名文件，但目录下只有1个音频，则作为全局通用音频 ===
-                if not a1_path:
-                    a1_files = [f for f in os.listdir(a_dir1) if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']]
-                    if len(a1_files) == 1:
-                        a1_path = os.path.join(a_dir1, a1_files[0])
                         
             # 智能匹配BGM
             a2_path = None
@@ -1698,11 +1720,6 @@ class FFmpegUltimateTool:
                     if os.path.exists(temp):
                         a2_path = temp
                         break
-                # === 补回：如果找不到同名文件，但目录下只有1个音频，则作为全局通用音频 ===
-                if not a2_path:
-                    a2_files = [f for f in os.listdir(a_dir2) if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']]
-                    if len(a2_files) == 1:
-                        a2_path = os.path.join(a_dir2, a2_files[0])
 
             # 智能匹配字幕
             s_path = None
@@ -1855,6 +1872,22 @@ class FFmpegUltimateTool:
                 
             active_in_filter_count = int(has_a0_in_filter) + int(has_a1) + int(has_a2)
 
+            # === 新增：动态读取界面设定的降噪强度 (防呆处理) ===
+            try: nr_o = max(1, min(97, int(self.m_dn_orig_val.get())))
+            except: nr_o = 12
+            try: nr_v = max(1, min(97, int(self.m_dn_voice_val.get())))
+            except: nr_v = 18
+            try: nr_b = max(1, min(97, int(self.m_dn_bgm_val.get())))
+            except: nr_b = 10
+
+            # === 修改：声学异构降噪滤镜组合 (挂载自定义强度) ===
+            # 原声：切除80Hz以下环境轰鸣，自定义去底噪
+            dn_filter_o = f"highpass=f=80,afftdn=nr={nr_o}:nf=-30"
+            # 干声：切除80Hz以下气流喷麦声，自定义强力抹除背景白噪音
+            dn_filter_v = f"highpass=f=80,afftdn=nr={nr_v}:nf=-40"
+            # BGM：切除50Hz交流电流声，自定义去噪强度防吞乐器音质，切除15000Hz以上高频嘶嘶声
+            dn_filter_b = f"highpass=f=50,afftdn=nr={nr_b}:nf=-25,lowpass=f=15000"
+
             # 获取视频精准时长以严格限制输出，防止时长增加
             dur_v = self.get_video_duration(v_path)
             
@@ -1898,24 +1931,27 @@ class FFmpegUltimateTool:
                     vol = vol_v if has_a1 else vol_b
                     ch_filter = ch_v_filter if has_a1 else ch_b_filter
                     
-                    # 判断当前正在处理的单轨是否被勾选了降噪
-                    dn_enabled = (has_a1 and self.m_dn_voice.get()) or (has_a2 and self.m_dn_bgm.get())
+                    # === 修改：精准匹配对应的专属降噪引擎 ===
+                    dn_filter_str = ""
+                    if has_a1 and self.m_dn_voice.get(): dn_filter_str = dn_filter_v
+                    elif has_a2 and self.m_dn_bgm.get(): dn_filter_str = dn_filter_b
                     
                     if mode == 3: # 无损直接映射
                         a_out = idx
                     else:
                         a_chain = []
                         
-                        # === 新增：将傅里叶降噪置于滤镜链最顶端 ===
-                        if dn_enabled: a_chain.append("afftdn")
+                        # 应用复合降噪滤镜 (置于最顶端优先处理)
+                        if dn_filter_str: a_chain.append(dn_filter_str)
                         
-                        # 方案一：率先在源头切入独立标准化，带上设定的绝对标准 LUFS
+                        # 方案一：率先在源头切入独立标准化
                         if mode == 4: a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
                         
                         # 在标准化后应用指定的声道调整滤镜
                         if ch_filter: a_chain.append(ch_filter)
                         
                         a_chain.append(f"volume={vol}")
+
                         if offset_val > 0: a_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
                         if force_tempo and tempo_str: a_chain.append(tempo_str)
@@ -1928,10 +1964,10 @@ class FFmpegUltimateTool:
 
                 else: # active_in_filter_count >= 2
                     mix_inputs = []
-                    # 【核心修改：为每一条音轨建立独立的“降噪 -> 标准化 -> 声道修整 -> 缩放 -> 偏移拉伸”微型加工流水线】
+                    # 【核心修改：为每一条音轨建立独立的“异构降噪 -> 标准化 -> 声道修整 -> 缩放 -> 偏移拉伸”流水线】
                     if has_a0_in_filter:
                         a0_chain = []
-                        if self.m_dn_orig.get(): a0_chain.append("afftdn") # 顶端降噪
+                        if self.m_dn_orig.get(): a0_chain.append(dn_filter_o) # 原声专属降噪
                         if mode == 4: a0_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_o_filter: a0_chain.append(ch_o_filter)
                         a0_chain.append(f"volume={vol_o}")
@@ -1940,7 +1976,7 @@ class FFmpegUltimateTool:
                         
                     if has_a1:
                         a1_chain = []
-                        if self.m_dn_voice.get(): a1_chain.append("afftdn") # 顶端降噪
+                        if self.m_dn_voice.get(): a1_chain.append(dn_filter_v) # 干声专属降噪 (防喷麦)
                         if mode == 4: a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_v_filter: a1_chain.append(ch_v_filter) 
                         a1_chain.append(f"volume={vol_v}")
@@ -1952,7 +1988,7 @@ class FFmpegUltimateTool:
                         
                     if has_a2:
                         a2_chain = []
-                        if self.m_dn_bgm.get(): a2_chain.append("afftdn") # 顶端降噪
+                        if self.m_dn_bgm.get(): a2_chain.append(dn_filter_b) # BGM专属降噪 (去电流与高频嘶声)
                         if mode == 4: a2_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_b_filter: a2_chain.append(ch_b_filter) 
                         a2_chain.append(f"volume={vol_b}")

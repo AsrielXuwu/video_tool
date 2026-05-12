@@ -93,10 +93,9 @@ class FFmpegUltimateTool:
         self.root = root
         self.root.title("视频批量处理工具")
         # 增加窗口宽度与高度以完美容纳加宽的下拉框和单选框
-        self.root.geometry("845x655")
+        self.root.geometry("940x650")
         self.root.resizable(True, True)
         self.root.minsize(600, 600)
-        
 
         style = ttk.Style()
         if "vista" in style.theme_names():
@@ -1167,10 +1166,48 @@ class FFmpegUltimateTool:
         self.m_dn_voice_val = tk.StringVar(value="18") # 干声默认降噪18dB (强效防喷麦)
         self.m_dn_bgm_val = tk.StringVar(value="10") # BGM默认降噪10dB (轻度防吃乐器)
 
+        # === 新增：干声多轨混合预处理模式 ===
+        self.m_voice_multi_mode = tk.BooleanVar(value=False)
+        self.m_voice_multi_norm = tk.IntVar(value=1) # 1: 不平衡, 2: 混合后平衡, 3: 混合前单轨独立平衡
+        self.m_voice_multi_lufs = tk.StringVar(value="-12.0")
+        self.m_skip_voice_norm = tk.BooleanVar(value=False) # 最终总平衡时是否跳过干声
+
         self.m_strict_match = tk.BooleanVar(value=False)
 
+        # === 修改：带隔离层的可滚动 Canvas 容器 ===
+        # 1. 创建一个专属的主容器来装载画布，与底部固定区隔离开
+        self.merge_scroll_container = ttk.Frame(self.tab_merge)
+        self.merge_scroll_container.pack(side="top", fill="both", expand=True)
+        
+        # 2. 创建 Canvas 和 侧边滚动条 (改挂载到专属容器上)
+        self.merge_canvas = tk.Canvas(self.merge_scroll_container, borderwidth=0, highlightthickness=0)
+        self.merge_scrollbar = ttk.Scrollbar(self.merge_scroll_container, orient="vertical", command=self.merge_canvas.yview)
+        
+        # 3. 创建真正容纳参数控件的内部 Frame
+        self.scrollable_merge_frame = ttk.Frame(self.merge_canvas)
+        self.merge_canvas_window = self.merge_canvas.create_window((0, 0), window=self.scrollable_merge_frame, anchor="nw")
+        
+        # 4. 动态自适应尺寸绑定
+        self.scrollable_merge_frame.bind("<Configure>", lambda e: self.merge_canvas.configure(scrollregion=self.merge_canvas.bbox("all")))
+        self.merge_canvas.bind("<Configure>", lambda e: self.merge_canvas.itemconfig(self.merge_canvas_window, width=e.width))
+        self.merge_canvas.configure(yscrollcommand=self.merge_scrollbar.set)
+        
+        # 5. 放置画布和滚动条
+        self.merge_canvas.pack(side="left", fill="both", expand=True)
+        self.merge_scrollbar.pack(side="right", fill="y")
+        
+        # 6. 绑定全局鼠标滚轮
+        def _on_mousewheel(event):
+            try:
+                if self.notebook.index(self.notebook.select()) == 3:
+                    if sys.platform == "darwin": self.merge_canvas.yview_scroll(int(-1 * event.delta), "units")
+                    else: self.merge_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except: pass
+        self.root.bind_all("<MouseWheel>", _on_mousewheel)
+        # === 滚动容器注入结束 ===
+
         # --- 目录选择区 ---
-        frame_dir = ttk.Frame(self.tab_merge, padding=(10, 5))
+        frame_dir = ttk.Frame(self.scrollable_merge_frame, padding=(10, 5))
         frame_dir.pack(fill="x")
         frame_dir.columnconfigure(1, weight=1)
 
@@ -1195,7 +1232,7 @@ class FFmpegUltimateTool:
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.m_out_dir)).grid(row=4, column=2)
 
         # --- 设置参数区 ---
-        frame_settings = ttk.Frame(self.tab_merge, padding=(10, 0))
+        frame_settings = ttk.Frame(self.scrollable_merge_frame, padding=(10, 0))
         frame_settings.pack(fill="both", expand=True)
 
         # 左侧：音频与字幕样式
@@ -1219,63 +1256,72 @@ class FFmpegUltimateTool:
         self.m_cb_bvol = ttk.Combobox(frame_vols, textvariable=self.m_bgm_vol, values=["200%", "150%", "125%","100%", "80%", "70%","65%", "0% (静音)"], width=7)
         self.m_cb_bvol.pack(side="left")
 
-        # === 新增：声道设置框 (放在音量下方) ===
-        frame_chs = ttk.Frame(lf_left)
-        frame_chs.grid(row=2, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
+        # === 新增：干声多轨子文件夹读取与预处理设定 ===
+        f_multi_v = ttk.Frame(lf_left)
+        f_multi_v.grid(row=2, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
+        self.m_chk_multi_v = ttk.Checkbutton(f_multi_v, text="多轨模式 (读取干声目录下的子文件夹进行角色混音)", variable=self.m_voice_multi_mode, command=self.update_m_audio_ui)
+        self.m_chk_multi_v.pack(side="top", anchor="w")
         
+        self.f_multi_opts = ttk.Frame(f_multi_v)
+        self.f_multi_opts.pack(side="top", anchor="w", padx=(20, 0))
+        ttk.Radiobutton(self.f_multi_opts, text="保持原始响度", variable=self.m_voice_multi_norm, value=1).pack(side="left")
+        ttk.Radiobutton(self.f_multi_opts, text="混合后平衡", variable=self.m_voice_multi_norm, value=2).pack(side="left", padx=(5,0))
+        ttk.Radiobutton(self.f_multi_opts, text="混合前独立平衡", variable=self.m_voice_multi_norm, value=3).pack(side="left", padx=(5,0))
+        ttk.Label(self.f_multi_opts, text=" 目标LUFS:").pack(side="left", padx=(5, 0))
+        self.m_spin_multi_lufs = ttk.Spinbox(self.f_multi_opts, from_=-70.0, to=-5.0, increment=1.0, textvariable=self.m_voice_multi_lufs, width=5)
+        self.m_spin_multi_lufs.pack(side="left")
+
+        # 声道设置
+        frame_chs = ttk.Frame(lf_left)
+        frame_chs.grid(row=3, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
         ttk.Label(frame_chs, text="原声:").pack(side="left")
         self.m_cb_och = ttk.Combobox(frame_chs, textvariable=self.m_orig_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
         self.m_cb_och.pack(side="left", padx=(0, 8))
-        
         ttk.Label(frame_chs, text="干声:").pack(side="left")
         self.m_cb_vch = ttk.Combobox(frame_chs, textvariable=self.m_voice_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
         self.m_cb_vch.pack(side="left", padx=(0, 8))
-        
         ttk.Label(frame_chs, text="BGM:").pack(side="left")
         self.m_cb_bch = ttk.Combobox(frame_chs, textvariable=self.m_bgm_ch, values=["保持原始", "双声道", "单声道"], width=7, state="readonly")
         self.m_cb_bch.pack(side="left")
 
-
-        # === 新增：降噪设置与强度调节框 (紧贴在声道下方) ===
+        # 降噪设置
         frame_dn = ttk.Frame(lf_left)
-        frame_dn.grid(row=3, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
-        
+        frame_dn.grid(row=4, column=0, columnspan=2, sticky="w", padx=(20, 0), pady=2)
         ttk.Label(frame_dn, text="降噪强度(dB):").pack(side="left")
-        
         self.m_chk_dn_o = ttk.Checkbutton(frame_dn, text="原声", variable=self.m_dn_orig)
         self.m_chk_dn_o.pack(side="left", padx=(0, 2))
         self.m_spin_dn_o = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_orig_val, width=3)
         self.m_spin_dn_o.pack(side="left", padx=(0, 8))
-        
         self.m_chk_dn_v = ttk.Checkbutton(frame_dn, text="干声", variable=self.m_dn_voice)
         self.m_chk_dn_v.pack(side="left", padx=(0, 2))
         self.m_spin_dn_v = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_voice_val, width=3)
         self.m_spin_dn_v.pack(side="left", padx=(0, 8))
-        
         self.m_chk_dn_b = ttk.Checkbutton(frame_dn, text="BGM", variable=self.m_dn_bgm)
         self.m_chk_dn_b.pack(side="left", padx=(0, 2))
         self.m_spin_dn_b = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_bgm_val, width=3)
         self.m_spin_dn_b.pack(side="left")
 
-        # 以下原件的 row 行号全部自动顺延 +1
         chk_keep = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
-        chk_keep.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        chk_keep.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 2))
 
-        ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=6, column=0, columnspan=2, sticky="w", pady=2)
         
         f_mode4 = ttk.Frame(lf_left)
-        f_mode4.grid(row=6, column=0, columnspan=2, sticky="w", pady=2)
+        f_mode4.grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Radiobutton(f_mode4, text="独立标准化各音轨后再混合", variable=self.m_audio_mode, value=4, command=self.update_m_audio_ui).pack(side="left")
-        
         ttk.Label(f_mode4, text=" 目标标准(LUFS):").pack(side="left", padx=(10, 2))
         self.m_target_lufs = tk.StringVar(value="-12.0")
         self.m_spin_lufs = ttk.Spinbox(f_mode4, from_=-70.0, to=-5.0, increment=1.0, textvariable=self.m_target_lufs, width=6)
         self.m_spin_lufs.pack(side="left")
+        
+        # === 新增：防止重复计算的跳过保护锁 ===
+        self.m_chk_skip_v_norm = ttk.Checkbutton(f_mode4, text="跳过干声", variable=self.m_skip_voice_norm)
+        self.m_chk_skip_v_norm.pack(side="left", padx=(10, 0))
 
-        ttk.Radiobutton(lf_left, text="保持原始音频流(单轨使用)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=7, column=0, columnspan=2, sticky="w", pady=(2, 5))
+        ttk.Radiobutton(lf_left, text="保持原始音频流(单轨使用)", variable=self.m_audio_mode, value=3, command=self.update_m_audio_ui).grid(row=8, column=0, columnspan=2, sticky="w", pady=(2, 5))
         
         f_time = ttk.Frame(lf_left)
-        f_time.grid(row=8, column=0, columnspan=2, sticky="w", pady=2)
+        f_time.grid(row=9, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Label(f_time, text="音频偏移(ms):").pack(side="left")
         self.m_entry_offset = ttk.Entry(f_time, textvariable=self.m_audio_offset, width=5)
         self.m_entry_offset.pack(side="left", padx=(2, 8))
@@ -1284,13 +1330,12 @@ class FFmpegUltimateTool:
         self.m_cb_crop = ttk.Checkbutton(f_time, text="直接裁剪尾巴", variable=self.m_force_crop, command=self.on_m_crop_check)
         self.m_cb_crop.pack(side="left")
 
-        ttk.Separator(lf_left, orient='horizontal').grid(row=9, column=0, columnspan=2, sticky="we", pady=5)
-        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=10, column=0, columnspan=2, sticky="w")
+        ttk.Separator(lf_left, orient='horizontal').grid(row=10, column=0, columnspan=2, sticky="we", pady=5)
+        ttk.Label(lf_left, text="(ASS格式自动保留原生样式)", foreground="#888").grid(row=11, column=0, columnspan=2, sticky="w")
         
-        ttk.Label(lf_left, text="SRT字体:").grid(row=11, column=0, sticky="w", pady=2)
-        
+        ttk.Label(lf_left, text="SRT字体:").grid(row=12, column=0, sticky="w", pady=2)
         frame_font = ttk.Frame(lf_left)
-        frame_font.grid(row=11, column=1, sticky="w")
+        frame_font.grid(row=12, column=1, sticky="w")
         font_families = list(tkfont.families())
         font_families.sort()
         default_font = "黑体" if "黑体" in font_families else ("SimHei" if "SimHei" in font_families else (font_families[0] if font_families else "Arial"))
@@ -1299,14 +1344,14 @@ class FFmpegUltimateTool:
         self.m_cb_font.pack(side="left")
         ttk.Button(frame_font, text="浏览...", width=6, command=self.browse_font).pack(side="left", padx=(5,0))
         
-        ttk.Label(lf_left, text="SRT大小:").grid(row=12, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=12, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT大小:").grid(row=13, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=10, to=100, textvariable=self.m_font_size, width=10).grid(row=13, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT描边:").grid(row=13, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=13, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT描边:").grid(row=14, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=10, textvariable=self.m_font_outline, width=10).grid(row=14, column=1, sticky="w")
         
-        ttk.Label(lf_left, text="SRT边距:").grid(row=14, column=0, sticky="w", pady=2)
-        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=14, column=1, sticky="w")
+        ttk.Label(lf_left, text="SRT边距:").grid(row=15, column=0, sticky="w", pady=2)
+        ttk.Spinbox(lf_left, from_=0, to=100, textvariable=self.m_font_marginv, width=10).grid(row=15, column=1, sticky="w")
 
         # 初始化时触发一次以确认界面排他状态
         self.update_m_audio_ui()
@@ -1540,6 +1585,22 @@ class FFmpegUltimateTool:
             else:
                 self.m_spin_lufs.config(state="disabled")
 
+        # === 新增：干声多轨设置面板的互斥 ===
+        if self.m_voice_multi_mode.get():
+            for child in self.f_multi_opts.winfo_children():
+                child.configure(state="normal" if not isinstance(child, ttk.Label) else "")
+        else:
+            for child in self.f_multi_opts.winfo_children():
+                child.configure(state="disabled" if not isinstance(child, ttk.Label) else "")
+
+        if hasattr(self, 'm_chk_skip_v_norm'):
+            if mode == 4:
+                self.m_spin_lufs.config(state="normal")
+                self.m_chk_skip_v_norm.config(state="normal")
+            else:
+                self.m_spin_lufs.config(state="disabled")
+                self.m_chk_skip_v_norm.config(state="disabled")
+
         # 处理偏移、拉伸和裁剪选项与“保持原始(模式3)”的互斥
         if mode == 3:
             self.m_entry_offset.config(state="disabled")
@@ -1703,16 +1764,25 @@ class FFmpegUltimateTool:
                     elif "Apple" in hw_choice: encoder = "h264_videotoolbox"
                     else: encoder = "libx264"
             
-            # 智能匹配干声
-            a1_path = None
+            # === 核心修改：支持子文件夹多轨探测与提取 ===
+            a1_paths = []
             if a_dir1 and os.path.exists(a_dir1):
-                for ext in ['.wav', '.mp3', '.flac', '.aac', '.m4a']:
-                    temp = os.path.join(a_dir1, base_name + ext)
-                    if os.path.exists(temp):
-                        a1_path = temp
-                        break
+                if self.m_voice_multi_mode.get():
+                    sub_dir = os.path.join(a_dir1, base_name)
+                    if os.path.exists(sub_dir) and os.path.isdir(sub_dir):
+                        for f in os.listdir(sub_dir):
+                            if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']:
+                                a1_paths.append(os.path.join(sub_dir, f))
+                else:
+                    for ext in ['.wav', '.mp3', '.flac', '.aac', '.m4a']:
+                        temp = os.path.join(a_dir1, base_name + ext)
+                        if os.path.exists(temp):
+                            a1_paths.append(temp)
+                            break
+            
+            has_a1 = len(a1_paths) > 0
                         
-            # 智能匹配BGM
+            # 智能匹配BGM (仅严格匹配同名文件)
             a2_path = None
             if a_dir2 and os.path.exists(a_dir2):
                 for ext in ['.wav', '.mp3', '.flac', '.aac', '.m4a']:
@@ -1732,27 +1802,21 @@ class FFmpegUltimateTool:
                         is_ass = (ext == '.ass')
                         break
             
-            # 至少有音频或字幕再处理，否则原封不动输出意义不大
-            if not a1_path and not a2_path and not s_path:
+            if not has_a1 and not a2_path and not s_path:
                 continue
 
-            # === 新增：严格匹配模式校验 ===
+            # 严格匹配模式校验
             if self.m_strict_match.get():
                 skip_this = False
-                # 只有当用户填写了该目录，但又没找到对应的文件时，才触发跳过
-                if a_dir1 and os.path.exists(a_dir1) and not a1_path: skip_this = True
+                if a_dir1 and os.path.exists(a_dir1) and not has_a1: skip_this = True
                 if a_dir2 and os.path.exists(a_dir2) and not a2_path: skip_this = True
                 if s_dir and os.path.exists(s_dir) and not s_path: skip_this = True
-                
                 if skip_this:
-                    # 可以在后台默默跳过，防产出半成品
                     print(f"严格模式拦截跳过 {v_filename}：存在缺失的外部轨文件。")
                     continue
-            # === 拦截结束 ===
 
             processed_count += 1
-            
-            # 保持原格式处理
+           
             if self.m_fmt_var.get() == "保持原格式":
                 out_ext = os.path.splitext(v_filename)[1]
             else:
@@ -1760,17 +1824,18 @@ class FFmpegUltimateTool:
                 
             out_file = os.path.join(actual_out_dir, base_name + out_ext)
 
-            # 构建合并指令组合
+            # === 核心修改：动态加载多文件作为 FFmpeg Input ===
             cmd = [self.ffmpeg_bin, "-y", "-i", v_path]
-            
             input_idx = 1
-            v_idx = -1
-            b_idx = -1
             
-            if a1_path:
-                cmd.extend(["-i", a1_path])
-                v_idx = input_idx
-                input_idx += 1
+            v_idx_list = []
+            if has_a1:
+                for p in a1_paths:
+                    cmd.extend(["-i", p])
+                    v_idx_list.append(input_idx)
+                    input_idx += 1
+                    
+            b_idx = -1
             if a2_path:
                 cmd.extend(["-i", a2_path])
                 b_idx = input_idx
@@ -1778,11 +1843,10 @@ class FFmpegUltimateTool:
 
             fc_parts = []
             v_out = "0:v:0?"
-            # === 核心修复：严格遵照勾选框决定原声去留 ===
             if self.m_keep_orig_audio.get():
                 a_out = "0:a:0?"
             else:
-                a_out = ""  # 只要没勾选，默认剥离/静音原声
+                a_out = ""
 
             # -- 智能分辨率缩放 --
             scale_filter = ""
@@ -1861,7 +1925,8 @@ class FFmpegUltimateTool:
             ch_v_filter = ch_map.get(self.m_voice_ch.get(), "")
             ch_b_filter = ch_map.get(self.m_bgm_ch.get(), "")
 
-            has_a1 = bool(a1_path)
+            # === 修改：适配多轨列表模式，判断列表是否有元素 ===
+            has_a1 = len(a1_paths) > 0 
             has_a2 = bool(a2_path)
             num_ext_audio = int(has_a1) + int(has_a2)
 
@@ -1904,7 +1969,7 @@ class FFmpegUltimateTool:
                 # 若需要拉伸，通过 ffmpeg 的 atempo 级联滤镜计算速率
                 if force_tempo and dur_v > 0:
                     dur_a = 0
-                    if has_a1: dur_a = self.get_video_duration(a1_path)
+                    if has_a1: dur_a = self.get_video_duration(a1_paths[0]) # === 修改：从列表中取出第一个轨道的时长作为参考 ===
                     elif has_a2: dur_a = self.get_video_duration(a2_path)
                     
                     if dur_a > 0:
@@ -1921,53 +1986,82 @@ class FFmpegUltimateTool:
                         tempo_str = ",".join(atempos)
 
             if num_ext_audio > 0:
-                # 获取用户设定的目标 LUFS 标准 (默认 -24.0 广播标准)
                 try: target_lufs = float(self.m_target_lufs.get())
                 except: target_lufs = -24.0
 
+                # === 引擎 1：干声多轨内循环预混 (The Sub-Graph Engine) ===
+                voice_pad_raw = ""
+                is_voice_mixed = False
+                
+                if has_a1:
+                    if len(a1_paths) > 1:
+                        is_voice_mixed = True
+                        v_multi_norm = self.m_voice_multi_norm.get()
+                        try: v_multi_lufs_val = float(self.m_voice_multi_lufs.get())
+                        except: v_multi_lufs_val = -12.0
+                        
+                        v_multi_inputs = []
+                        for i, idx in enumerate(v_idx_list):
+                            chain = []
+                            # 挂载独立降噪，防多轨噪音叠加爆音
+                            if self.m_dn_voice.get(): chain.append(dn_filter_v)
+                            # 挂载预平衡
+                            if v_multi_norm == 3: chain.append(f"loudnorm=I={v_multi_lufs_val}:TP=-1.5:LRA=11")
+                            
+                            if chain:
+                                fc_parts.append(f"[{idx}:a:0]{','.join(chain)}[v_sub_{i}]")
+                                v_multi_inputs.append(f"[v_sub_{i}]")
+                            else:
+                                v_multi_inputs.append(f"[{idx}:a:0]")
+                        
+                        mix_str_v = "".join(v_multi_inputs)
+                        # 将同一集的不同角色混合成一条主干声轨
+                        mix_chain_v = f"{mix_str_v}amix=inputs={len(v_idx_list)}:duration=longest:normalize=0"
+                        
+                        if v_multi_norm == 2:
+                            mix_chain_v += f",loudnorm=I={v_multi_lufs_val}:TP=-1.5:LRA=11"
+                            
+                        fc_parts.append(f"{mix_chain_v}[v_mixed]")
+                        voice_pad_raw = "v_mixed"
+                    else:
+                        voice_pad_raw = f"{v_idx_list[0]}:a:0"
+
+                # === 引擎 2：全局音视频融合 (The Main Graph Engine) ===
                 if active_in_filter_count == 1:
-                    # 只有一条外部音轨
-                    idx = f"{v_idx}:a:0" if has_a1 else f"{b_idx}:a:0"
+                    idx = voice_pad_raw if has_a1 else f"{b_idx}:a:0"
                     vol = vol_v if has_a1 else vol_b
                     ch_filter = ch_v_filter if has_a1 else ch_b_filter
                     
-                    # === 修改：精准匹配对应的专属降噪引擎 ===
                     dn_filter_str = ""
-                    if has_a1 and self.m_dn_voice.get(): dn_filter_str = dn_filter_v
+                    # 只有当单条且没经过子网预混时，才在此处降噪
+                    if has_a1 and self.m_dn_voice.get() and not is_voice_mixed: dn_filter_str = dn_filter_v
                     elif has_a2 and self.m_dn_bgm.get(): dn_filter_str = dn_filter_b
                     
-                    if mode == 3: # 无损直接映射
+                    if mode == 3 and not is_voice_mixed: 
                         a_out = idx
                     else:
                         a_chain = []
-                        
-                        # 应用复合降噪滤镜 (置于最顶端优先处理)
                         if dn_filter_str: a_chain.append(dn_filter_str)
-                        
-                        # 方案一：率先在源头切入独立标准化
-                        if mode == 4: a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
-                        
-                        # 在标准化后应用指定的声道调整滤镜
+                        # 用户指定跳过最终保护锁时，不强制标准化
+                        if mode == 4 and not (has_a1 and self.m_skip_voice_norm.get()): 
+                            a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
                         if ch_filter: a_chain.append(ch_filter)
                         
                         a_chain.append(f"volume={vol}")
-
                         if offset_val > 0: a_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
                         if force_tempo and tempo_str: a_chain.append(tempo_str)
-                        
                         if mode == 2: a_chain.append("loudnorm") 
                         
                         a_filter = ",".join(a_chain)
                         fc_parts.append(f"[{idx}]{a_filter}[aout]")
                         a_out = "[aout]"
 
-                else: # active_in_filter_count >= 2
+                else: 
                     mix_inputs = []
-                    # 【核心修改：为每一条音轨建立独立的“异构降噪 -> 标准化 -> 声道修整 -> 缩放 -> 偏移拉伸”流水线】
                     if has_a0_in_filter:
                         a0_chain = []
-                        if self.m_dn_orig.get(): a0_chain.append(dn_filter_o) # 原声专属降噪
+                        if self.m_dn_orig.get(): a0_chain.append(dn_filter_o)
                         if mode == 4: a0_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_o_filter: a0_chain.append(ch_o_filter)
                         a0_chain.append(f"volume={vol_o}")
@@ -1976,19 +2070,21 @@ class FFmpegUltimateTool:
                         
                     if has_a1:
                         a1_chain = []
-                        if self.m_dn_voice.get(): a1_chain.append(dn_filter_v) # 干声专属降噪 (防喷麦)
-                        if mode == 4: a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
+                        # 防止与子网预混发生重复降噪
+                        if self.m_dn_voice.get() and not is_voice_mixed: a1_chain.append(dn_filter_v) 
+                        # 防止在最终混音时重复标准化
+                        if mode == 4 and not self.m_skip_voice_norm.get(): a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_v_filter: a1_chain.append(ch_v_filter) 
                         a1_chain.append(f"volume={vol_v}")
                         if offset_val > 0: a1_chain.append(f"adelay={offset_val}|{offset_val}")
                         elif offset_val < 0: a1_chain.append(f"atrim=start={abs(offset_val)/1000.0},asetpts=PTS-STARTPTS")
                         if force_tempo and tempo_str: a1_chain.append(tempo_str)
-                        fc_parts.append(f"[{v_idx}:a:0]{','.join(a1_chain)}[a1_vol]")
+                        fc_parts.append(f"[{voice_pad_raw}]{','.join(a1_chain)}[a1_vol]")
                         mix_inputs.append("[a1_vol]")
                         
                     if has_a2:
                         a2_chain = []
-                        if self.m_dn_bgm.get(): a2_chain.append(dn_filter_b) # BGM专属降噪 (去电流与高频嘶声)
+                        if self.m_dn_bgm.get(): a2_chain.append(dn_filter_b) 
                         if mode == 4: a2_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_b_filter: a2_chain.append(ch_b_filter) 
                         a2_chain.append(f"volume={vol_b}")
@@ -1999,23 +2095,19 @@ class FFmpegUltimateTool:
                         mix_inputs.append("[a2_vol]")
                         
                     mix_str = "".join(mix_inputs)
-                    
-                    if mode == 2: # 自动 loudnorm (先混合所有声音，再对整体进行防爆音平衡)
+                    if mode == 2: 
                         fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[amix]")
                         fc_parts.append(f"[amix]loudnorm[aout]")
                         a_out = "[aout]"
-                    else: # 模式 1 (纯手工) 或 模式 4 (单轨独立平衡后缩放)
-                        # 因为前面已经做过标准化和按百分比的对数缩放，这里只需原样纯净混合即可
+                    else: 
                         fc_parts.append(f"{mix_str}amix=inputs={active_in_filter_count}:duration=longest:normalize=0[aout]")
                         a_out = "[aout]"
 
-            # === 最核心的修复：把误删的流映射与滤镜挂载代码补回来！ ===
             if fc_parts:
                 cmd.extend(["-filter_complex", ";".join(fc_parts)])
                 cmd.extend(["-map", v_out])
-                if a_out: cmd.extend(["-map", a_out]) # 只有包含有效音频流时才映射
+                if a_out: cmd.extend(["-map", a_out])
             else:
-                # 没有任何滤镜介入，直接以原生流输入防报错
                 cmd.extend(["-map", "0:v:0?"])
                 if a_out: cmd.extend(["-map", a_out])
 
@@ -2033,40 +2125,30 @@ class FFmpegUltimateTool:
                     elif "videotoolbox" in encoder: cmd.extend(["-q:v", q])
                     else: cmd.extend(["-crf", q])
                 elif self.m_quality_mode.get() == 3:
-                    # 动态探测原视频流码率
                     orig_v_bitrate = self.get_video_stream_bitrate(v_path)
-                    if orig_v_bitrate:
-                        cmd.extend(["-b:v", orig_v_bitrate])
-                    else:
-                        cmd.extend(["-crf", "28"]) # 提取失败则回退默认
+                    if orig_v_bitrate: cmd.extend(["-b:v", orig_v_bitrate])
+                    else: cmd.extend(["-crf", "28"]) 
                 elif self.m_quality_mode.get() == 4:
-                    # === 智能限流核心逻辑 ===
                     try: target_br = int(self.m_max_bitrate.get())
                     except: target_br = 3000
                     orig_v_bitrate = self.get_video_stream_bitrate(v_path)
                     if orig_v_bitrate:
                         orig_br_kbps = int(orig_v_bitrate) // 1000
-                        if orig_br_kbps > target_br:
-                            cmd.extend(["-b:v", f"{target_br}k"])
-                        else:
-                            cmd.extend(["-b:v", orig_v_bitrate])
-                    else:
-                        cmd.extend(["-b:v", f"{target_br}k"])
+                        if orig_br_kbps > target_br: cmd.extend(["-b:v", f"{target_br}k"])
+                        else: cmd.extend(["-b:v", orig_v_bitrate])
+                    else: cmd.extend(["-b:v", f"{target_br}k"])
                 
                 preset_val = self.m_preset.get()
                 if encoder == "h264_amf":
                     amf_preset_map = {"fast": "speed", "medium": "balanced", "slow": "quality"}
                     cmd.extend(["-quality", amf_preset_map.get(preset_val, "balanced")])
-                else:
-                    cmd.extend(["-preset", preset_val])
+                else: cmd.extend(["-preset", preset_val])
                 
                 fps_val = self.m_fps_var.get()
-                if fps_val != "保持原始":
-                    cmd.extend(["-r", fps_val])
+                if fps_val != "保持原始": cmd.extend(["-r", fps_val])
 
                 threads_val = self.m_threads_var.get()
-                if threads_val != "自动":
-                    cmd.extend(["-threads", threads_val])
+                if threads_val != "自动": cmd.extend(["-threads", threads_val])
             
             # -- 音频编码策略逻辑 --
             if not a_out:

@@ -2153,9 +2153,9 @@ class FFmpegUltimateTool:
             # -- 音频编码策略逻辑 --
             if not a_out:
                 pass # 如果没有输出音频（a_out为空），则彻底跳过音频编码参数配置
-            elif active_in_filter_count == 1 and mode == 3:
+            elif active_in_filter_count == 1 and mode == 3: # (或加上 and not is_voice_mixed:)
                 # 只有单条独立音轨，且选择了保持原始拷贝
-                active_path = a1_path if has_a1 else (a2_path if has_a2 else "")
+                active_path = a1_paths[0] if has_a1 else (a2_path if has_a2 else "")
                 # 智能拦截：WAV/FLAC等无损格式直封入视频会导致严重的兼容性爆音(不支持的IPCM)
                 if active_path and active_path.lower().endswith(('.wav', '.flac', '.pcm')):
                     audio_br = self.m_audio_bitrate_var.get().strip()

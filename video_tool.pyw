@@ -812,7 +812,13 @@ class FFmpegUltimateTool:
                     elif "nvenc" in encoder: cmd.extend(["-cq", q_val])
                     elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q_val, "-qp_p", q_val, "-qp_b", q_val])
                     elif "qsv" in encoder: cmd.extend(["-global_quality", q_val])
-                    elif "videotoolbox" in encoder: cmd.extend(["-q:v", q_val]) # 新增: Mac M芯片动态质量参数
+                    elif "videotoolbox" in encoder: 
+                        # === Mac 专属修复：VideoToolbox 动态质量转换 ===
+                        try: 
+                            vt_q = max(1, min(100, int(100 - (float(q_val) / 51.0) * 100)))
+                        except: 
+                            vt_q = 60
+                        cmd.extend(["-b:v", "0", "-q:v", str(vt_q)])
                     else: cmd.extend(["-crf", q_val])
                 elif self.quality_mode.get() == 3:
                     # 动态探测原视频流码率
@@ -839,6 +845,9 @@ class FFmpegUltimateTool:
                 if encoder == "h264_amf":
                     amf_preset_map = {"fast": "speed", "medium": "balanced", "slow": "quality"}
                     cmd.extend(["-quality", amf_preset_map.get(preset_val, "balanced")])
+                elif "videotoolbox" in encoder:
+                    # === Mac 专属修复：拦截 preset 参数防止 0kb 崩溃 ===
+                    pass
                 else:
                     cmd.extend(["-preset", preset_val])
                 
@@ -2151,12 +2160,23 @@ class FFmpegUltimateTool:
                     elif "nvenc" in encoder: cmd.extend(["-cq", q])
                     elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
                     elif "qsv" in encoder: cmd.extend(["-global_quality", q])
-                    elif "videotoolbox" in encoder: cmd.extend(["-q:v", q])
+                    elif "videotoolbox" in encoder: 
+                        # === Mac 专属修复：VideoToolbox 动态质量转换与激活 ===
+                        try: 
+                            # 将 x264 的 0-51 (越小越好) 智能映射为 Mac 的 1-100 (越大越好)
+                            vt_q = max(1, min(100, int(100 - (float(q) / 51.0) * 100)))
+                        except: 
+                            vt_q = 60
+                        # 必须强制传入 -b:v 0，否则 Mac 硬件编码器会崩溃
+                        cmd.extend(["-b:v", "0", "-q:v", str(vt_q)])
                     else: cmd.extend(["-crf", q])
                 elif self.m_quality_mode.get() == 3:
                     orig_v_bitrate = self.get_video_stream_bitrate(v_path)
                     if orig_v_bitrate: cmd.extend(["-b:v", orig_v_bitrate])
-                    else: cmd.extend(["-crf", "28"]) 
+                    else: 
+                        # 兜底逻辑也做一下 Mac 兼容 (CRF 28 约等于 Mac 的 q:v 45)
+                        if "videotoolbox" in encoder: cmd.extend(["-b:v", "0", "-q:v", "45"])
+                        else: cmd.extend(["-crf", "28"])
                 elif self.m_quality_mode.get() == 4:
                     try: target_br = int(self.m_max_bitrate.get())
                     except: target_br = 3000
@@ -2171,6 +2191,9 @@ class FFmpegUltimateTool:
                 if encoder == "h264_amf":
                     amf_preset_map = {"fast": "speed", "medium": "balanced", "slow": "quality"}
                     cmd.extend(["-quality", amf_preset_map.get(preset_val, "balanced")])
+                elif "videotoolbox" in encoder:
+                    # === Mac 专属修复：拦截 preset 参数防止 0kb 崩溃 ===
+                    pass
                 else: cmd.extend(["-preset", preset_val])
                 
                 fps_val = self.m_fps_var.get()
@@ -2684,7 +2707,13 @@ class FFmpegUltimateTool:
                 elif "nvenc" in encoder: cmd.extend(["-cq", q])
                 elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
                 elif "qsv" in encoder: cmd.extend(["-global_quality", q])
-                elif "videotoolbox" in encoder: cmd.extend(["-q:v", q])
+                elif "videotoolbox" in encoder: 
+                    # === Mac 专属修复：VideoToolbox 动态质量转换 ===
+                    try: 
+                        vt_q = max(1, min(100, int(100 - (float(q) / 51.0) * 100)))
+                    except: 
+                        vt_q = 60
+                    cmd.extend(["-b:v", "0", "-q:v", str(vt_q)])
                 else: cmd.extend(["-crf", q])
             elif qm == 3:
                 orig_v_bitrate = self.get_video_stream_bitrate(in_file)
@@ -2709,6 +2738,9 @@ class FFmpegUltimateTool:
             preset_val = self.sm_preset.get()
             if encoder == "h264_amf":
                 cmd.extend(["-quality", {"fast":"speed", "medium":"balanced", "slow":"quality"}.get(preset_val, "balanced")])
+            elif "videotoolbox" in encoder:
+                # === Mac 专属修复：拦截 preset ===
+                pass
             else: cmd.extend(["-preset", preset_val])
             if self.sm_threads_var.get() != "自动": cmd.extend(["-threads", self.sm_threads_var.get()])
             

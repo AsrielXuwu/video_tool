@@ -13,12 +13,6 @@ import shutil
 import json
 import pandas as pd
 
-# === 新增：跨平台安全隐藏控制台黑框参数 ===
-if sys.platform.startswith('win'):
-    CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
-else:
-    CREATE_NO_WINDOW = 0  # macOS/Linux 下传入 0 会被底层安全忽略，绝对不报错！
-
 # === 核心修改：动态获取外部 ffmpeg 文件夹路径 ===
 def get_bin_path(filename):
     """
@@ -61,7 +55,7 @@ def auto_detect_gpu():
             ps_cmd = 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'
             result = subprocess.check_output(
                 ["powershell", "-NoProfile", "-Command", ps_cmd], 
-                creationflags=CREATE_NO_WINDOW, 
+                creationflags=subprocess.CREATE_NO_WINDOW, 
                 text=True, errors='ignore'
             )
             gpus = [line.strip() for line in result.split('\n') if line.strip()]
@@ -73,7 +67,7 @@ def auto_detect_gpu():
             try:
                 result = subprocess.check_output(
                     ["wmic", "path", "win32_VideoController", "get", "name"],
-                    creationflags=CREATE_NO_WINDOW,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                     text=True, errors='ignore'
                 )
                 gpus = [line.strip() for line in result.split('\n') if line.strip() and line.strip().lower() != 'name']
@@ -514,7 +508,7 @@ class FFmpegUltimateTool:
                     stderr=subprocess.PIPE, 
                     encoding='utf-8', 
                     errors='ignore',
-                    creationflags=CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW
                 )
                 
                 output = result.stdout
@@ -666,7 +660,7 @@ class FFmpegUltimateTool:
         """核心辅助：智能获取视频流原码率"""
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v:0', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'streams' in data and len(data['streams']) > 0:
                 stream = data['streams'][0]
@@ -675,7 +669,7 @@ class FFmpegUltimateTool:
             
             # 如果流中没有 bit_rate，尝试从总 format 中获取，并扣除音频的预估值
             cmd_fmt = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', filepath]
-            result_fmt = subprocess.run(cmd_fmt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
+            result_fmt = subprocess.run(cmd_fmt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
             data_fmt = json.loads(result_fmt.stdout)
             if 'format' in data_fmt and 'bit_rate' in data_fmt['format']:
                 total_br = int(data_fmt['format']['bit_rate'])
@@ -690,7 +684,7 @@ class FFmpegUltimateTool:
         """核心辅助：智能获取音频流原码率"""
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'a:0', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'streams' in data and len(data['streams']) > 0:
                 stream = data['streams'][0]
@@ -883,7 +877,7 @@ class FFmpegUltimateTool:
                     stdout=subprocess.PIPE, 
                     encoding='utf-8',   
                     errors='ignore',     
-                    creationflags=CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW
                 )
 
                 for line in self.current_process.stderr:
@@ -1092,7 +1086,7 @@ class FFmpegUltimateTool:
                     stdout=subprocess.PIPE, 
                     encoding='utf-8', 
                     errors='ignore',
-                    creationflags=CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW
                 )
 
                 for line in self.current_process.stderr:
@@ -2217,7 +2211,7 @@ class FFmpegUltimateTool:
                     stdout=subprocess.PIPE, 
                     encoding='utf-8', 
                     errors='ignore',
-                    creationflags=CREATE_NO_WINDOW,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                     cwd=out_dir
                 )
 
@@ -2580,7 +2574,7 @@ class FFmpegUltimateTool:
         """核心辅助：智能获取视频流真实的编码格式"""
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v:0', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'streams' in data and len(data['streams']) > 0:
                 codec_name = data['streams'][0].get('codec_name', '').lower()
@@ -2592,7 +2586,7 @@ class FFmpegUltimateTool:
     def get_video_duration(self, filepath):
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'format' in data and 'duration' in data['format']:
                 return float(data['format']['duration'])
@@ -2733,7 +2727,7 @@ class FFmpegUltimateTool:
         self.root.after(0, self.sm_progress_var.set, 0)
         total_duration_sec = 0
         try:
-            self.current_process = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
+            self.current_process = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
             for line in self.current_process.stderr:
                 if self.is_cancelled:
                     self.current_process.kill()

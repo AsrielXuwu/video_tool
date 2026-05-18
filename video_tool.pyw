@@ -6,6 +6,7 @@ import subprocess
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
+from tkinterdnd2 import TkinterDnD, DND_FILES
 import zipfile
 import math
 import shutil
@@ -271,6 +272,28 @@ class FFmpegUltimateTool:
         
         self.setup_split_merge_ui()
 
+    def setup_dnd_entry(self, parent, textvariable):
+        """生成并返回一个支持系统级文件/文件夹拖拽的 Entry 组件，完美兼容 Win/Mac"""
+        entry = ttk.Entry(parent, textvariable=textvariable)
+        entry.drop_target_register(DND_FILES)
+        
+        def on_drop(event):
+            # tk.splitlist 能完美自动清洗 Windows 路径自带的异常大括号 {}
+            paths = self.root.tk.splitlist(event.data)
+            if paths:
+                raw_path = paths[0]
+                
+                # === 新增：兼容 macOS 拖拽的 file:// 协议与 URL 编码解析 ===
+                if sys.platform == "darwin" and raw_path.startswith("file://"):
+                    import urllib.parse
+                    # 切掉前 7 个字符 (file://) 并解码中文字符和空格
+                    raw_path = urllib.parse.unquote(raw_path[7:])
+                    
+                textvariable.set(raw_path)
+                
+        entry.dnd_bind('<<Drop>>', on_drop)
+        return entry    
+
     # ================= 原视频处理 UI =================
     def setup_ui(self):
         frame_dir = ttk.Frame(self.tab_process, padding=10)
@@ -278,11 +301,11 @@ class FFmpegUltimateTool:
         frame_dir.columnconfigure(1, weight=1) 
         
         ttk.Label(frame_dir, text="输入目录:").grid(row=0, column=0, sticky="e")
-        ttk.Entry(frame_dir, textvariable=self.in_dir).grid(row=0, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(frame_dir, self.in_dir).grid(row=0, column=1, sticky="we", padx=5)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.in_dir)).grid(row=0, column=2)
 
         ttk.Label(frame_dir, text="输出目录:").grid(row=1, column=0, sticky="e", pady=5)
-        ttk.Entry(frame_dir, textvariable=self.out_dir).grid(row=1, column=1, sticky="we", padx=5, pady=5)
+        self.setup_dnd_entry(frame_dir, self.out_dir).grid(row=1, column=1, sticky="we", padx=5, pady=5)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.out_dir)).grid(row=1, column=2)
 
         frame_global = ttk.LabelFrame(self.tab_process, text="核心引擎设置", padding=10)
@@ -401,11 +424,11 @@ class FFmpegUltimateTool:
         frame_dir.columnconfigure(1, weight=1)
 
         ttk.Label(frame_dir, text="需统计的视频目录:").grid(row=0, column=0, sticky="e", pady=15)
-        ttk.Entry(frame_dir, textvariable=self.stat_in_dir).grid(row=0, column=1, sticky="we", padx=5, pady=15)
+        self.setup_dnd_entry(frame_dir, self.stat_in_dir).grid(row=0, column=1, sticky="we", padx=5, pady=15)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.stat_in_dir)).grid(row=0, column=2, pady=15)
 
         ttk.Label(frame_dir, text="表格输出目录:").grid(row=1, column=0, sticky="e", pady=15)
-        ttk.Entry(frame_dir, textvariable=self.stat_out_dir).grid(row=1, column=1, sticky="we", padx=5, pady=15)
+        self.setup_dnd_entry(frame_dir, self.stat_out_dir).grid(row=1, column=1, sticky="we", padx=5, pady=15)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.stat_out_dir)).grid(row=1, column=2, pady=15)
 
         tip_label = ttk.Label(self.tab_stat, text="说明：此功能将遍历该目录及所有子目录下的视频，并自动生成\n《视频详细数据.xlsx》和《视频总时长统计.xlsx》两份报表。", foreground="#555")
@@ -955,11 +978,11 @@ class FFmpegUltimateTool:
         frame_dir.columnconfigure(1, weight=1)
 
         ttk.Label(frame_dir, text="视频输入目录:").grid(row=0, column=0, sticky="e", pady=15)
-        ttk.Entry(frame_dir, textvariable=self.audio_in_dir).grid(row=0, column=1, sticky="we", padx=5, pady=15)
+        self.setup_dnd_entry(frame_dir, self.audio_in_dir).grid(row=0, column=1, sticky="we", padx=5, pady=15)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.audio_in_dir)).grid(row=0, column=2, pady=15)
 
         ttk.Label(frame_dir, text="音频输出目录:").grid(row=1, column=0, sticky="e", pady=15)
-        ttk.Entry(frame_dir, textvariable=self.audio_out_dir).grid(row=1, column=1, sticky="we", padx=5, pady=15)
+        self.setup_dnd_entry(frame_dir, self.audio_out_dir).grid(row=1, column=1, sticky="we", padx=5, pady=15)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.audio_out_dir)).grid(row=1, column=2, pady=15)
 
         frame_opts = ttk.LabelFrame(self.tab_audio, text="提取设置", padding=10)
@@ -1212,23 +1235,23 @@ class FFmpegUltimateTool:
         frame_dir.columnconfigure(1, weight=1)
 
         ttk.Label(frame_dir, text="视频目录:").grid(row=0, column=0, sticky="e", pady=5)
-        ttk.Entry(frame_dir, textvariable=self.m_video_in).grid(row=0, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(frame_dir, self.m_video_in).grid(row=0, column=1, sticky="we", padx=5)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.m_video_in)).grid(row=0, column=2)
 
         ttk.Label(frame_dir, text="干声目录 (可选):").grid(row=1, column=0, sticky="e", pady=5)
-        ttk.Entry(frame_dir, textvariable=self.m_voice_in).grid(row=1, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(frame_dir, self.m_voice_in).grid(row=1, column=1, sticky="we", padx=5)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.m_voice_in)).grid(row=1, column=2)
 
         ttk.Label(frame_dir, text="BGM目录 (可选):").grid(row=2, column=0, sticky="e", pady=5)
-        ttk.Entry(frame_dir, textvariable=self.m_bgm_in).grid(row=2, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(frame_dir, self.m_bgm_in).grid(row=2, column=1, sticky="we", padx=5)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.m_bgm_in)).grid(row=2, column=2)
 
         ttk.Label(frame_dir, text="字幕目录 (可选):").grid(row=3, column=0, sticky="e", pady=5)
-        ttk.Entry(frame_dir, textvariable=self.m_sub_in).grid(row=3, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(frame_dir, self.m_sub_in).grid(row=3, column=1, sticky="we", padx=5)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.m_sub_in)).grid(row=3, column=2)
         
         ttk.Label(frame_dir, text="合并输出目录:").grid(row=4, column=0, sticky="e", pady=5)
-        ttk.Entry(frame_dir, textvariable=self.m_out_dir).grid(row=4, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(frame_dir, self.m_out_dir).grid(row=4, column=1, sticky="we", padx=5)
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.m_out_dir)).grid(row=4, column=2)
 
         # --- 设置参数区 ---
@@ -2296,15 +2319,15 @@ class FFmpegUltimateTool:
         # 2. 拆分专属面板
         self.frame_sm_split = ttk.LabelFrame(self.tab_split_merge, text="拆分输入输出设置", padding=10)
         ttk.Label(self.frame_sm_split, text="输入视频目录:").grid(row=0, column=0, sticky="e", pady=2)
-        ttk.Entry(self.frame_sm_split, textvariable=self.sm_split_in).grid(row=0, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(self.frame_sm_split, self.sm_split_in).grid(row=0, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_split, text="浏览...", command=lambda: self.browse_dir(self.sm_split_in)).grid(row=0, column=2)
 
         ttk.Label(self.frame_sm_split, text="前半部分输出:").grid(row=1, column=0, sticky="e", pady=2)
-        ttk.Entry(self.frame_sm_split, textvariable=self.sm_split_out1).grid(row=1, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(self.frame_sm_split, self.sm_split_out1).grid(row=1, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_split, text="浏览...", command=lambda: self.browse_dir(self.sm_split_out1)).grid(row=1, column=2)
 
         ttk.Label(self.frame_sm_split, text="后半部分输出:").grid(row=2, column=0, sticky="e", pady=2)
-        ttk.Entry(self.frame_sm_split, textvariable=self.sm_split_out2).grid(row=2, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(self.frame_sm_split, self.sm_split_out2).grid(row=2, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_split, text="浏览...", command=lambda: self.browse_dir(self.sm_split_out2)).grid(row=2, column=2)
 
         # 新增：拆分计算方向选择
@@ -2328,15 +2351,15 @@ class FFmpegUltimateTool:
         # 3. 合并专属面板
         self.frame_sm_merge = ttk.LabelFrame(self.tab_split_merge, text="合并输入输出设置", padding=10)
         ttk.Label(self.frame_sm_merge, text="前半部分视频:").grid(row=0, column=0, sticky="e", pady=2)
-        ttk.Entry(self.frame_sm_merge, textvariable=self.sm_merge_in1).grid(row=0, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(self.frame_sm_merge, self.sm_merge_in1).grid(row=0, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_merge, text="浏览...", command=lambda: self.browse_dir(self.sm_merge_in1)).grid(row=0, column=2)
 
         ttk.Label(self.frame_sm_merge, text="后半部分视频:").grid(row=1, column=0, sticky="e", pady=2)
-        ttk.Entry(self.frame_sm_merge, textvariable=self.sm_merge_in2).grid(row=1, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(self.frame_sm_merge, self.sm_merge_in2).grid(row=1, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_merge, text="浏览...", command=lambda: self.browse_dir(self.sm_merge_in2)).grid(row=1, column=2)
 
         ttk.Label(self.frame_sm_merge, text="合并输出目录:").grid(row=2, column=0, sticky="e", pady=2)
-        ttk.Entry(self.frame_sm_merge, textvariable=self.sm_merge_out).grid(row=2, column=1, sticky="we", padx=5)
+        self.setup_dnd_entry(self.frame_sm_merge, self.sm_merge_out).grid(row=2, column=1, sticky="we", padx=5)
         ttk.Button(self.frame_sm_merge, text="浏览...", command=lambda: self.browse_dir(self.sm_merge_out)).grid(row=2, column=2)
         self.frame_sm_merge.columnconfigure(1, weight=1)
 
@@ -2852,6 +2875,6 @@ class FFmpegUltimateTool:
         return matched_any if self.rv_rule_logic.get() == 1 else matched_all
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
     app = FFmpegUltimateTool(root)
     root.mainloop()

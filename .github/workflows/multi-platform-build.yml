@@ -38,7 +38,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller pandas openpyxl
+          pip install pyinstaller pandas openpyxl tkinterdnd2
 
       # ================= 下载与配置 FFmpeg =================
       - name: Download FFmpeg (Windows)

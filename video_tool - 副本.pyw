@@ -93,7 +93,7 @@ class FFmpegUltimateTool:
         self.root = root
         self.root.title("视频批量处理工具")
         # 增加窗口宽度与高度以完美容纳加宽的下拉框和单选框
-        self.root.geometry("940x720")
+        self.root.geometry("940x650")
         self.root.resizable(True, True)
         self.root.minsize(600, 600)
 
@@ -1174,8 +1174,40 @@ class FFmpegUltimateTool:
 
         self.m_strict_match = tk.BooleanVar(value=False)
 
+        # === 修改：带隔离层的可滚动 Canvas 容器 ===
+        # 1. 创建一个专属的主容器来装载画布，与底部固定区隔离开
+        self.merge_scroll_container = ttk.Frame(self.tab_merge)
+        self.merge_scroll_container.pack(side="top", fill="both", expand=True)
+        
+        # 2. 创建 Canvas 和 侧边滚动条 (改挂载到专属容器上)
+        self.merge_canvas = tk.Canvas(self.merge_scroll_container, borderwidth=0, highlightthickness=0)
+        self.merge_scrollbar = ttk.Scrollbar(self.merge_scroll_container, orient="vertical", command=self.merge_canvas.yview)
+        
+        # 3. 创建真正容纳参数控件的内部 Frame
+        self.scrollable_merge_frame = ttk.Frame(self.merge_canvas)
+        self.merge_canvas_window = self.merge_canvas.create_window((0, 0), window=self.scrollable_merge_frame, anchor="nw")
+        
+        # 4. 动态自适应尺寸绑定
+        self.scrollable_merge_frame.bind("<Configure>", lambda e: self.merge_canvas.configure(scrollregion=self.merge_canvas.bbox("all")))
+        self.merge_canvas.bind("<Configure>", lambda e: self.merge_canvas.itemconfig(self.merge_canvas_window, width=e.width))
+        self.merge_canvas.configure(yscrollcommand=self.merge_scrollbar.set)
+        
+        # 5. 放置画布和滚动条
+        self.merge_canvas.pack(side="left", fill="both", expand=True)
+        self.merge_scrollbar.pack(side="right", fill="y")
+        
+        # 6. 绑定全局鼠标滚轮
+        def _on_mousewheel(event):
+            try:
+                if self.notebook.index(self.notebook.select()) == 3:
+                    if sys.platform == "darwin": self.merge_canvas.yview_scroll(int(-1 * event.delta), "units")
+                    else: self.merge_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except: pass
+        self.root.bind_all("<MouseWheel>", _on_mousewheel)
+        # === 滚动容器注入结束 ===
+
         # --- 目录选择区 ---
-        frame_dir = ttk.Frame(self.tab_merge, padding=(10, 5))
+        frame_dir = ttk.Frame(self.scrollable_merge_frame, padding=(10, 5))
         frame_dir.pack(fill="x")
         frame_dir.columnconfigure(1, weight=1)
 
@@ -1200,7 +1232,7 @@ class FFmpegUltimateTool:
         ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.m_out_dir)).grid(row=4, column=2)
 
         # --- 设置参数区 ---
-        frame_settings = ttk.Frame(self.tab_merge, padding=(10, 0))
+        frame_settings = ttk.Frame(self.scrollable_merge_frame, padding=(10, 0))
         frame_settings.pack(fill="both", expand=True)
 
         # 左侧：音频与字幕样式
@@ -2121,9 +2153,9 @@ class FFmpegUltimateTool:
             # -- 音频编码策略逻辑 --
             if not a_out:
                 pass # 如果没有输出音频（a_out为空），则彻底跳过音频编码参数配置
-            elif active_in_filter_count == 1 and mode == 3:
+            elif active_in_filter_count == 1 and mode == 3: # (或加上 and not is_voice_mixed:)
                 # 只有单条独立音轨，且选择了保持原始拷贝
-                active_path = a1_path if has_a1 else (a2_path if has_a2 else "")
+                active_path = a1_paths[0] if has_a1 else (a2_path if has_a2 else "")
                 # 智能拦截：WAV/FLAC等无损格式直封入视频会导致严重的兼容性爆音(不支持的IPCM)
                 if active_path and active_path.lower().endswith(('.wav', '.flac', '.pcm')):
                     audio_br = self.m_audio_bitrate_var.get().strip()

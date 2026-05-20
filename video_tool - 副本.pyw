@@ -13,6 +13,12 @@ import shutil
 import json
 import pandas as pd
 
+# === 新增：跨平台安全隐藏控制台黑框参数 ===
+if sys.platform.startswith('win'):
+    CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+else:
+    CREATE_NO_WINDOW = 0  # macOS/Linux 下传入 0 会被底层安全忽略，绝对不报错！
+
 # === 核心修改：动态获取外部 ffmpeg 文件夹路径 ===
 def get_bin_path(filename):
     """
@@ -55,7 +61,7 @@ def auto_detect_gpu():
             ps_cmd = 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'
             result = subprocess.check_output(
                 ["powershell", "-NoProfile", "-Command", ps_cmd], 
-                creationflags=subprocess.CREATE_NO_WINDOW, 
+                creationflags=CREATE_NO_WINDOW, 
                 text=True, errors='ignore'
             )
             gpus = [line.strip() for line in result.split('\n') if line.strip()]
@@ -67,7 +73,7 @@ def auto_detect_gpu():
             try:
                 result = subprocess.check_output(
                     ["wmic", "path", "win32_VideoController", "get", "name"],
-                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    creationflags=CREATE_NO_WINDOW,
                     text=True, errors='ignore'
                 )
                 gpus = [line.strip() for line in result.split('\n') if line.strip() and line.strip().lower() != 'name']
@@ -508,7 +514,7 @@ class FFmpegUltimateTool:
                     stderr=subprocess.PIPE, 
                     encoding='utf-8', 
                     errors='ignore',
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=CREATE_NO_WINDOW
                 )
                 
                 output = result.stdout
@@ -660,7 +666,7 @@ class FFmpegUltimateTool:
         """核心辅助：智能获取视频流原码率"""
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v:0', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'streams' in data and len(data['streams']) > 0:
                 stream = data['streams'][0]
@@ -669,7 +675,7 @@ class FFmpegUltimateTool:
             
             # 如果流中没有 bit_rate，尝试从总 format 中获取，并扣除音频的预估值
             cmd_fmt = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', filepath]
-            result_fmt = subprocess.run(cmd_fmt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            result_fmt = subprocess.run(cmd_fmt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
             data_fmt = json.loads(result_fmt.stdout)
             if 'format' in data_fmt and 'bit_rate' in data_fmt['format']:
                 total_br = int(data_fmt['format']['bit_rate'])
@@ -684,7 +690,7 @@ class FFmpegUltimateTool:
         """核心辅助：智能获取音频流原码率"""
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'a:0', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'streams' in data and len(data['streams']) > 0:
                 stream = data['streams'][0]
@@ -806,7 +812,13 @@ class FFmpegUltimateTool:
                     elif "nvenc" in encoder: cmd.extend(["-cq", q_val])
                     elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q_val, "-qp_p", q_val, "-qp_b", q_val])
                     elif "qsv" in encoder: cmd.extend(["-global_quality", q_val])
-                    elif "videotoolbox" in encoder: cmd.extend(["-q:v", q_val]) # 新增: Mac M芯片动态质量参数
+                    elif "videotoolbox" in encoder: 
+                        # === Mac 专属修复：VideoToolbox 动态质量转换 ===
+                        try: 
+                            vt_q = max(1, min(100, int(100 - (float(q_val) / 51.0) * 100)))
+                        except: 
+                            vt_q = 60
+                        cmd.extend(["-b:v", "0", "-q:v", str(vt_q)])
                     else: cmd.extend(["-crf", q_val])
                 elif self.quality_mode.get() == 3:
                     # 动态探测原视频流码率
@@ -833,6 +845,9 @@ class FFmpegUltimateTool:
                 if encoder == "h264_amf":
                     amf_preset_map = {"fast": "speed", "medium": "balanced", "slow": "quality"}
                     cmd.extend(["-quality", amf_preset_map.get(preset_val, "balanced")])
+                elif "videotoolbox" in encoder:
+                    # === Mac 专属修复：拦截 preset 参数防止 0kb 崩溃 ===
+                    pass
                 else:
                     cmd.extend(["-preset", preset_val])
                 
@@ -877,7 +892,7 @@ class FFmpegUltimateTool:
                     stdout=subprocess.PIPE, 
                     encoding='utf-8',   
                     errors='ignore',     
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=CREATE_NO_WINDOW
                 )
 
                 for line in self.current_process.stderr:
@@ -1086,7 +1101,7 @@ class FFmpegUltimateTool:
                     stdout=subprocess.PIPE, 
                     encoding='utf-8', 
                     errors='ignore',
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=CREATE_NO_WINDOW
                 )
 
                 for line in self.current_process.stderr:
@@ -2145,12 +2160,23 @@ class FFmpegUltimateTool:
                     elif "nvenc" in encoder: cmd.extend(["-cq", q])
                     elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
                     elif "qsv" in encoder: cmd.extend(["-global_quality", q])
-                    elif "videotoolbox" in encoder: cmd.extend(["-q:v", q])
+                    elif "videotoolbox" in encoder: 
+                        # === Mac 专属修复：VideoToolbox 动态质量转换与激活 ===
+                        try: 
+                            # 将 x264 的 0-51 (越小越好) 智能映射为 Mac 的 1-100 (越大越好)
+                            vt_q = max(1, min(100, int(100 - (float(q) / 51.0) * 100)))
+                        except: 
+                            vt_q = 60
+                        # 必须强制传入 -b:v 0，否则 Mac 硬件编码器会崩溃
+                        cmd.extend(["-b:v", "0", "-q:v", str(vt_q)])
                     else: cmd.extend(["-crf", q])
                 elif self.m_quality_mode.get() == 3:
                     orig_v_bitrate = self.get_video_stream_bitrate(v_path)
                     if orig_v_bitrate: cmd.extend(["-b:v", orig_v_bitrate])
-                    else: cmd.extend(["-crf", "28"]) 
+                    else: 
+                        # 兜底逻辑也做一下 Mac 兼容 (CRF 28 约等于 Mac 的 q:v 45)
+                        if "videotoolbox" in encoder: cmd.extend(["-b:v", "0", "-q:v", "45"])
+                        else: cmd.extend(["-crf", "28"])
                 elif self.m_quality_mode.get() == 4:
                     try: target_br = int(self.m_max_bitrate.get())
                     except: target_br = 3000
@@ -2165,6 +2191,9 @@ class FFmpegUltimateTool:
                 if encoder == "h264_amf":
                     amf_preset_map = {"fast": "speed", "medium": "balanced", "slow": "quality"}
                     cmd.extend(["-quality", amf_preset_map.get(preset_val, "balanced")])
+                elif "videotoolbox" in encoder:
+                    # === Mac 专属修复：拦截 preset 参数防止 0kb 崩溃 ===
+                    pass
                 else: cmd.extend(["-preset", preset_val])
                 
                 fps_val = self.m_fps_var.get()
@@ -2211,7 +2240,7 @@ class FFmpegUltimateTool:
                     stdout=subprocess.PIPE, 
                     encoding='utf-8', 
                     errors='ignore',
-                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    creationflags=CREATE_NO_WINDOW,
                     cwd=out_dir
                 )
 
@@ -2574,7 +2603,7 @@ class FFmpegUltimateTool:
         """核心辅助：智能获取视频流真实的编码格式"""
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 'v:0', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'streams' in data and len(data['streams']) > 0:
                 codec_name = data['streams'][0].get('codec_name', '').lower()
@@ -2586,7 +2615,7 @@ class FFmpegUltimateTool:
     def get_video_duration(self, filepath):
         try:
             cmd = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', filepath]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
             data = json.loads(result.stdout)
             if 'format' in data and 'duration' in data['format']:
                 return float(data['format']['duration'])
@@ -2678,7 +2707,13 @@ class FFmpegUltimateTool:
                 elif "nvenc" in encoder: cmd.extend(["-cq", q])
                 elif "amf" in encoder: cmd.extend(["-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q])
                 elif "qsv" in encoder: cmd.extend(["-global_quality", q])
-                elif "videotoolbox" in encoder: cmd.extend(["-q:v", q])
+                elif "videotoolbox" in encoder: 
+                    # === Mac 专属修复：VideoToolbox 动态质量转换 ===
+                    try: 
+                        vt_q = max(1, min(100, int(100 - (float(q) / 51.0) * 100)))
+                    except: 
+                        vt_q = 60
+                    cmd.extend(["-b:v", "0", "-q:v", str(vt_q)])
                 else: cmd.extend(["-crf", q])
             elif qm == 3:
                 orig_v_bitrate = self.get_video_stream_bitrate(in_file)
@@ -2703,6 +2738,9 @@ class FFmpegUltimateTool:
             preset_val = self.sm_preset.get()
             if encoder == "h264_amf":
                 cmd.extend(["-quality", {"fast":"speed", "medium":"balanced", "slow":"quality"}.get(preset_val, "balanced")])
+            elif "videotoolbox" in encoder:
+                # === Mac 专属修复：拦截 preset ===
+                pass
             else: cmd.extend(["-preset", preset_val])
             if self.sm_threads_var.get() != "自动": cmd.extend(["-threads", self.sm_threads_var.get()])
             
@@ -2727,7 +2765,7 @@ class FFmpegUltimateTool:
         self.root.after(0, self.sm_progress_var.set, 0)
         total_duration_sec = 0
         try:
-            self.current_process = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=subprocess.CREATE_NO_WINDOW)
+            self.current_process = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW)
             for line in self.current_process.stderr:
                 if self.is_cancelled:
                     self.current_process.kill()

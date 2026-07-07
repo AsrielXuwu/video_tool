@@ -278,6 +278,150 @@ class FFmpegUltimateTool:
         
         self.setup_split_merge_ui()
 
+        # === 变量定义 (响度检测专属) ===
+        self.ld_in_dir = tk.StringVar()
+        self.ld_out_dir = tk.StringVar()
+        self.ld_progress_var = tk.DoubleVar(value=0)
+        self.ld_status_text = tk.StringVar(value="等待开始...")
+        self.is_ld_processing = False
+
+        # === 注册新标签页 ===
+        self.tab_loudness = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_loudness, text=" 音频信息/响度统计 ")
+        
+        self.setup_loudness_ui()
+
+    def process_loudness_thread(self, in_dir, out_dir):
+        import json
+        from datetime import datetime
+        
+        # 兼容音视频常见格式
+        supported_formats = ('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.mp4', '.mkv', '.mov', '.avi', '.ts', '.wmv', '.webm', '.flv', '.m4v')
+        audio_files = [f for f in os.listdir(in_dir) if f.lower().endswith(supported_formats)]
+        
+        if not audio_files:
+            self.root.after(0, self.ld_reset_ui, "目标目录中未找到支持的音视频文件。")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        xlsx_filename = f"音视频综合响度与参数报告_{timestamp}.xlsx"
+        xlsx_path = os.path.join(out_dir, xlsx_filename)
+
+        total_files = len(audio_files)
+        success_count = 0
+        detailed_data = [] # 列表容器，用于收集每一行的数据字典
+
+        for i, filename in enumerate(audio_files):
+            if self.is_cancelled:
+                break
+
+            file_path = os.path.join(in_dir, filename)
+            self.root.after(0, self.ld_status_text.set, f"正在分析 ({i+1}/{total_files}): {filename}")
+            
+            # === 初始化基础参数 ===
+            duration = 0.0
+            dur_min = 0.0
+            resolution = ""
+            bitrate = ""       
+            v_bitrate = ""     
+            fps = ""
+            loudness = None
+            err_msg = ""
+            
+            # === 引擎 1：调用 FFprobe 提取基础媒体信息 ===
+            try:
+                cmd_probe = [self.ffprobe_bin, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', file_path]
+                result_probe = subprocess.run(
+                    cmd_probe, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.PIPE, 
+                    encoding='utf-8', 
+                    errors='ignore',
+                    creationflags=CREATE_NO_WINDOW
+                )
+                
+                output = result_probe.stdout
+                if output and output.strip():
+                    data = json.loads(output)
+                    if 'format' in data and 'duration' in data['format']:
+                        duration = float(data['format']['duration'])
+                        dur_min = duration / 60.0
+                        
+                        if 'bit_rate' in data['format']:
+                            bitrate = f"{round(float(data['format']['bit_rate']) / 1000)} kbps"
+                            
+                    video_stream = next((stream for stream in data.get('streams', []) if stream.get('codec_type') == 'video'), None)
+                    if video_stream:
+                        if 'width' in video_stream and 'height' in video_stream:
+                            resolution = f"{video_stream['width']}*{video_stream['height']}"
+                        if 'r_frame_rate' in video_stream:
+                            num, den = video_stream['r_frame_rate'].split('/')
+                            if den != '0':
+                                fps = str(round(float(num) / float(den), 2))
+                        if 'bit_rate' in video_stream:
+                            v_bitrate = f"{round(float(video_stream['bit_rate']) / 1000)} kbps"
+            except Exception as e:
+                err_msg = f"参数解析失败: {e} "
+
+            if self.is_cancelled: break
+
+            # === 引擎 2：调用 FFmpeg 提取 LUFS 响度 ===
+            try:
+                cmd_loudness = [self.ffmpeg_bin, '-hide_banner', '-nostats', '-i', file_path, '-filter:a', 'ebur128', '-f', 'null', '-']
+                self.current_process = subprocess.Popen(
+                    cmd_loudness, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW
+                )
+                
+                _, err_output = self.current_process.communicate() 
+                
+                if not self.is_cancelled and err_output:
+                    # 正则匹配 Summary 中的综合响度数据
+                    matches = re.findall(r'I:\s+(-?\d+\.\d+)\s+LUFS', err_output)
+                    if matches:
+                        loudness = float(matches[-1])
+            except Exception as e:
+                err_msg += f"响度解析失败: {e}"
+
+            if self.is_cancelled: break
+
+            # === 整合双擎数据追加到列表中 ===
+            is_success = not err_msg and loudness is not None
+            if is_success: success_count += 1
+            
+            detailed_data.append({
+                '文件名': filename,
+                '文件路径': file_path.replace('\\', '/'),
+                '平均响度 (LUFS)': loudness if loudness is not None else "",
+                '时长（秒）': round(duration, 3) if duration > 0 else "",
+                '时长（分）': round(dur_min, 3) if dur_min > 0 else "",
+                '分辨率': resolution,
+                '帧率': fps,
+                '总码率': bitrate,
+                '视频流码率': v_bitrate,
+                '状态': '成功' if is_success else '异常/失败',
+                '错误信息': err_msg
+            })
+
+            # 实时更新全局进度条
+            percent = ((i + 1) / total_files) * 100
+            self.root.after(0, self.ld_progress_var.set, percent)
+
+        # === 核心修改：利用 Pandas 一次性转换并导出高水准 .xlsx 文件 ===
+        if detailed_data:
+            try:
+                self.root.after(0, self.ld_status_text.set, "正在生成 Excel 表格...")
+                df = pd.DataFrame(detailed_data)
+                df.to_excel(xlsx_path, index=False)
+            except Exception as e:
+                self.root.after(0, self.ld_reset_ui, f"导出 Excel 表格失败: {e}", False)
+                return
+
+        if self.is_cancelled:
+            self.root.after(0, self.ld_reset_ui, f"检测已中止！已成功保存当前已分析出的部分数据到：\n{xlsx_filename}")
+        else:
+            self.root.after(0, self.ld_progress_var.set, 100)
+            self.root.after(0, self.ld_reset_ui, f"检测完成！成功解析 {success_count}/{total_files} 个文件。\n报告已生成：{xlsx_filename}", True)
+
     def setup_dnd_entry(self, parent, textvariable):
         """生成并返回一个支持系统级文件/文件夹拖拽的 Entry 组件，完美兼容 Win/Mac"""
         entry = ttk.Entry(parent, textvariable=textvariable)
@@ -2892,25 +3036,80 @@ class FFmpegUltimateTool:
         self.sm_status_text.set(message)
         if success: messagebox.showinfo("完成", message)
         else: messagebox.showwarning("提示", message)
-        if not self.rv_rules: return True
-        matched_any = False
-        matched_all = True
-        for rule in self.rv_rules:
-            field_key = rule['field']
-            if field_key == "字幕文本": field_key = "字幕文本 (Text)" 
-            elif field_key == "样式/角色(仅ASS)": field_key = "全部列综合"
-            target = field_data.get(field_key, "")
-            is_match = False
-            if rule['mode'] == '包含': is_match = rule['val'] in target
-            elif rule['mode'] == '等于': is_match = rule['val'] == target
-            elif rule['mode'] == '正则匹配':
-                try: 
-                    # 【核心修复】加入 re.DOTALL，让 .* 能够跨越 SRT 中的换行符，实现真正的“只要包含就处理”
-                    if re.search(rule['val'], target, re.DOTALL): is_match = True
-                except: pass
-            if is_match: matched_any = True
-            else: matched_all = False
-        return matched_any if self.rv_rule_logic.get() == 1 else matched_all
+
+# ================= 新增：音频响度检测 UI 与逻辑 =================
+    def setup_loudness_ui(self):
+        frame_dir = ttk.Frame(self.tab_loudness, padding=20)
+        frame_dir.pack(fill="x")
+        frame_dir.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_dir, text="需检测的音频/视频目录:").grid(row=0, column=0, sticky="e", pady=15)
+        self.setup_dnd_entry(frame_dir, self.ld_in_dir).grid(row=0, column=1, sticky="we", padx=5, pady=15)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ld_in_dir)).grid(row=0, column=2, pady=15)
+
+        ttk.Label(frame_dir, text="表格输出目录:").grid(row=1, column=0, sticky="e", pady=15)
+        self.setup_dnd_entry(frame_dir, self.ld_out_dir).grid(row=1, column=1, sticky="we", padx=5, pady=15)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ld_out_dir)).grid(row=1, column=2, pady=15)
+
+        tip_label = ttk.Label(self.tab_loudness, text="说明：此功能将调用 ebur128 算法扫描目录下所有音视频的\n整体平均响度 (Integrated Loudness)以及其他信息，并自动导出为 Excel (.xlsx) 报告表。", foreground="#555")
+        tip_label.pack(pady=10)
+
+        frame_status = ttk.Frame(self.tab_loudness, padding=(20, 10))
+        frame_status.pack(fill="x", pady=10)
+
+        self.lbl_ld_status = ttk.Label(frame_status, textvariable=self.ld_status_text)
+        self.lbl_ld_status.pack(anchor="w")
+
+        self.ld_progress_bar = ttk.Progressbar(frame_status, orient="horizontal", mode="determinate", variable=self.ld_progress_var)
+        self.ld_progress_bar.pack(fill="x", pady=5)
+
+        frame_btn = ttk.Frame(self.tab_loudness, padding=20)
+        frame_btn.pack(fill="x")
+
+        self.btn_run_ld = ttk.Button(frame_btn, text="开始检测", command=self.start_loudness)
+        self.btn_run_ld.pack(side="left", expand=True, padx=10, ipadx=10, ipady=5)
+
+        self.btn_stop_ld = ttk.Button(frame_btn, text="停止", command=self.stop_loudness, state="disabled")
+        self.btn_stop_ld.pack(side="right", expand=True, padx=10, ipadx=10, ipady=5)
+
+    def stop_loudness(self):
+        if self.is_ld_processing:
+            self.is_cancelled = True
+            self.ld_status_text.set("正在中止检测，请稍候...")
+            self.btn_stop_ld.config(state="disabled")
+            if self.current_process:
+                try: self.current_process.kill()
+                except Exception: pass
+
+    def start_loudness(self):
+        in_dir = self.ld_in_dir.get().strip()
+        out_dir = self.ld_out_dir.get().strip()
+        if not os.path.exists(in_dir) or not out_dir:
+            messagebox.showerror("错误", "请检查输入目录和输出目录是否正确！")
+            return
+
+        if not os.path.exists(self.ffmpeg_bin):
+            messagebox.showerror("环境缺失", f"找不到 {self.ffmpeg_bin}！")
+            return
+
+        os.makedirs(out_dir, exist_ok=True)
+        self.is_ld_processing = True
+        self.is_cancelled = False
+        
+        self.btn_run_ld.config(state="disabled")
+        self.btn_stop_ld.config(state="normal")
+        self.ld_progress_var.set(0)
+        
+        threading.Thread(target=self.process_loudness_thread, args=(in_dir, out_dir), daemon=True).start()
+
+    def ld_reset_ui(self, message, success=False):
+        self.is_ld_processing = False
+        self.current_process = None
+        self.btn_run_ld.config(state="normal")
+        self.btn_stop_ld.config(state="disabled")
+        self.ld_status_text.set(message)
+        if success: messagebox.showinfo("完成", message)
+        else: messagebox.showwarning("提示", message)
 
 if __name__ == "__main__":
     root = TkinterDnD.Tk()

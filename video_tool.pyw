@@ -164,6 +164,7 @@ class FFmpegUltimateTool:
         # === 变量定义 (音视频合并专属) ===
         self.m_fmt_var = tk.StringVar(value="保持原格式")
         self.m_fmt_options = ["保持原格式", "MP4", "MKV", "MOV", "AVI"]
+        self.m_force_resample = tk.BooleanVar(value=True) # 新增: 强制重采样防爆保护 (默认开启)
 
         # === 变量定义 (音视频合并专属) ===
         self.m_audio_only = tk.BooleanVar(value=False) # 新增: 只输出音频模式
@@ -313,6 +314,25 @@ class FFmpegUltimateTool:
         self.notebook.add(self.tab_sub_loudness, text=" 字幕区间响度统计 ")
         
         self.setup_sub_loudness_ui()
+
+        # === 变量定义 (音频批量裁剪/填充专属) ===
+        self.ap_video_dir = tk.StringVar()
+        self.ap_audio_dir = tk.StringVar()
+        self.ap_out_dir = tk.StringVar()
+        self.ap_fmt_var = tk.StringVar(value="保持原始")
+        self.ap_progress_var = tk.DoubleVar(value=0)
+        self.ap_status_text = tk.StringVar(value="等待开始...")
+        self.is_ap_processing = False
+        
+        # 并发进程池容器与线程安全锁
+        self.ap_running_processes = set()
+        self.ap_proc_lock = threading.Lock()
+
+        # === 注册新标签页 ===
+        self.tab_audio_pad = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_audio_pad, text=" 音频批量裁剪/填充 ")
+        
+        self.setup_audio_pad_ui()
 
     def process_loudness_thread(self, in_dir, out_dir):
         import json
@@ -1509,8 +1529,13 @@ class FFmpegUltimateTool:
         self.m_spin_dn_b = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_bgm_val, width=3)
         self.m_spin_dn_b.pack(side="left")
 
-        self.m_chk_keep_orig_audio = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
-        self.m_chk_keep_orig_audio.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        # === 替换为横向紧凑布局，加入重采样保护选项 ===
+        f_row5 = ttk.Frame(lf_left)
+        f_row5.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        self.m_chk_keep_orig_audio = ttk.Checkbutton(f_row5, text="保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
+        self.m_chk_keep_orig_audio.pack(side="left", padx=(0, 15))
+        self.m_chk_resample = ttk.Checkbutton(f_row5, text="强制重采样保护 (统一48kHz, 防多轨/静音崩溃)", variable=self.m_force_resample, command=self.update_m_audio_ui)
+        self.m_chk_resample.pack(side="left")
 
         ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=6, column=0, columnspan=2, sticky="w", pady=2)
         
@@ -1843,7 +1868,10 @@ class FFmpegUltimateTool:
             self.m_cb_bvol.config(state="disabled")
 
         # === 声道与降噪控制框互斥锁 ===
-        if mode != 3: # 只要不选“纯转封装拷贝”，且勾选了原声，都允许单独设声道和降噪
+        if mode != 3: # 只要不选“纯转封装拷贝”，都允许自由开启重采样
+            # 💡 核心修复：确保这两行与 if self.m_keep_orig_audio.get(): 是同级平行的！
+            self.m_chk_resample.config(state="normal") 
+            
             if self.m_keep_orig_audio.get():
                 self.m_cb_och.config(state="readonly")
                 self.m_chk_dn_o.config(state="normal")
@@ -1860,6 +1888,9 @@ class FFmpegUltimateTool:
             self.m_spin_dn_v.config(state="normal")
             self.m_spin_dn_b.config(state="normal")
         else:
+            # 选了纯拷贝，强行变灰并禁用重采样
+            self.m_chk_resample.config(state="disabled") 
+            
             self.m_cb_och.config(state="disabled")
             self.m_cb_vch.config(state="disabled")
             self.m_cb_bch.config(state="disabled")
@@ -2245,6 +2276,9 @@ class FFmpegUltimateTool:
             dn_filter_v = f"highpass=f=80,afftdn=nr={nr_v}:nf=-40"
             dn_filter_b = f"highpass=f=50,afftdn=nr={nr_b}:nf=-25,lowpass=f=15000"
 
+            # === 新增：构建底层重采样装甲 ===
+            resample_filter = "aresample=48000:async=1" if self.m_force_resample.get() else ""
+
             if not is_audio_only: dur_v = self.get_video_duration(v_path)
             else: dur_v = 0
             
@@ -2292,6 +2326,7 @@ class FFmpegUltimateTool:
                         v_multi_inputs = []
                         for _i, idx in enumerate(v_idx_list):
                             chain = []
+                            if resample_filter: chain.append(resample_filter) # <--- 新增插入
                             if self.m_dn_voice.get(): chain.append(dn_filter_v)
                             if v_multi_norm == 3: chain.append(f"loudnorm=I={v_multi_lufs_val}:TP=-1.5:LRA=11")
                             
@@ -2323,6 +2358,7 @@ class FFmpegUltimateTool:
                         a_out = idx
                     else:
                         a_chain = []
+                        if resample_filter: a_chain.append(resample_filter) # <--- 新增插入
                         if dn_filter_str: a_chain.append(dn_filter_str)
                         if mode == 4 and not (has_a1 and self.m_skip_voice_norm.get()): 
                             a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
@@ -2342,6 +2378,7 @@ class FFmpegUltimateTool:
                     mix_inputs = []
                     if has_a0_in_filter:
                         a0_chain = []
+                        if resample_filter: a0_chain.append(resample_filter) # <--- 新增插入
                         if self.m_dn_orig.get(): a0_chain.append(dn_filter_o)
                         if mode == 4: a0_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_o_filter: a0_chain.append(ch_o_filter)
@@ -2351,6 +2388,7 @@ class FFmpegUltimateTool:
                         
                     if has_a1:
                         a1_chain = []
+                        if resample_filter: a1_chain.append(resample_filter) # <--- 新增插入
                         if self.m_dn_voice.get() and not is_voice_mixed: a1_chain.append(dn_filter_v) 
                         if mode == 4 and not self.m_skip_voice_norm.get(): a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_v_filter: a1_chain.append(ch_v_filter) 
@@ -2363,6 +2401,7 @@ class FFmpegUltimateTool:
                         
                     if has_a2:
                         a2_chain = []
+                        if resample_filter: a2_chain.append(resample_filter) # <--- 新增插入
                         if self.m_dn_bgm.get(): a2_chain.append(dn_filter_b) 
                         if mode == 4: a2_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_b_filter: a2_chain.append(ch_b_filter) 
@@ -3437,6 +3476,244 @@ class FFmpegUltimateTool:
         self.btn_run_sld.config(state="normal")
         self.btn_stop_sld.config(state="disabled")
         self.sld_status_text.set(message)
+        if success: messagebox.showinfo("完成", message)
+        else: messagebox.showwarning("提示", message)
+
+# ================= 新增：音频批量裁剪/填充 UI 与逻辑 =================
+    def setup_audio_pad_ui(self):
+        frame_dir = ttk.Frame(self.tab_audio_pad, padding=20)
+        frame_dir.pack(fill="x")
+        frame_dir.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_dir, text="基准视频目录:").grid(row=0, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.ap_video_dir).grid(row=0, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ap_video_dir)).grid(row=0, column=2, pady=10)
+
+        ttk.Label(frame_dir, text="待处理音频主目录:").grid(row=1, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.ap_audio_dir).grid(row=1, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ap_audio_dir)).grid(row=1, column=2, pady=10)
+
+        ttk.Label(frame_dir, text="输出主目录:").grid(row=2, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.ap_out_dir).grid(row=2, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ap_out_dir)).grid(row=2, column=2, pady=10)
+
+        frame_opts = ttk.LabelFrame(self.tab_audio_pad, text="处理规则设定", padding=10)
+        frame_opts.pack(fill="x", padx=20, pady=5)
+        
+        ttk.Label(frame_opts, text="输出格式:").pack(side="left", padx=5)
+        cb_fmt = ttk.Combobox(frame_opts, textvariable=self.ap_fmt_var, values=["保持原始", "WAV (无损 PCM)", "MP3 (高品质 320k)"], state="readonly", width=20)
+        cb_fmt.pack(side="left", padx=5)
+
+        tip_label = ttk.Label(self.tab_audio_pad, text="说明：此功能将根据视频的精确时长，自动处理同名子文件夹中的所有音频。\n【超长裁剪】会启用无损复制(不重编码)；【过短填充】会自动在尾部补齐纯数字静音。\n目录结构示例: 音频主目录/视频名/音频轨1.wav", foreground="#555")
+        tip_label.pack(pady=15)
+
+        frame_status = ttk.Frame(self.tab_audio_pad, padding=(20, 10))
+        frame_status.pack(fill="x", pady=5)
+
+        self.lbl_ap_status = ttk.Label(frame_status, textvariable=self.ap_status_text)
+        self.lbl_ap_status.pack(anchor="w")
+
+        self.ap_progress_bar = ttk.Progressbar(frame_status, orient="horizontal", mode="determinate", variable=self.ap_progress_var)
+        self.ap_progress_bar.pack(fill="x", pady=5)
+
+        frame_btn = ttk.Frame(self.tab_audio_pad, padding=20)
+        frame_btn.pack(fill="x")
+
+        self.btn_run_ap = ttk.Button(frame_btn, text="开始自适应处理", command=self.start_audio_pad)
+        self.btn_run_ap.pack(side="left", expand=True, padx=10, ipadx=10, ipady=5)
+
+        self.btn_stop_ap = ttk.Button(frame_btn, text="停止", command=self.stop_audio_pad, state="disabled")
+        self.btn_stop_ap.pack(side="right", expand=True, padx=10, ipadx=10, ipady=5)
+
+    def stop_audio_pad(self):
+        if self.is_ap_processing:
+            self.is_cancelled = True
+            self.ap_status_text.set("正在强行中止所有并发处理，请稍候...")
+            self.btn_stop_ap.config(state="disabled")
+            
+            with self.ap_proc_lock:
+                for proc in self.ap_running_processes:
+                    try: proc.kill()
+                    except: pass
+                self.ap_running_processes.clear()
+
+    def start_audio_pad(self):
+        v_dir = self.ap_video_dir.get().strip()
+        a_dir = self.ap_audio_dir.get().strip()
+        out_dir = self.ap_out_dir.get().strip()
+        
+        if not os.path.exists(v_dir) or not os.path.exists(a_dir) or not out_dir:
+            messagebox.showerror("错误", "请确保所有目录路径都已正确填写！")
+            return
+
+        if not os.path.exists(self.ffmpeg_bin) or not os.path.exists(self.ffprobe_bin):
+            messagebox.showerror("环境缺失", "找不到核心组件 FFmpeg 或 FFprobe！")
+            return
+
+        os.makedirs(out_dir, exist_ok=True)
+        self.is_ap_processing = True
+        self.is_cancelled = False
+        
+        self.btn_run_ap.config(state="disabled")
+        self.btn_stop_ap.config(state="normal")
+        self.ap_progress_var.set(0)
+        
+        threading.Thread(target=self.process_audio_pad_thread, args=(v_dir, a_dir, out_dir), daemon=True).start()
+
+    def process_audio_pad_thread(self, v_dir, a_dir, out_dir):
+        import concurrent.futures
+        
+        video_files = [f for f in os.listdir(v_dir) if os.path.splitext(f)[1].lower() in self.supported_exts]
+        if not video_files:
+            self.root.after(0, self.ap_reset_ui, "视频目录中未找到支持的视频文件。")
+            return
+
+        self.root.after(0, self.ap_status_text.set, "正在扫描视频基准时长与目标音频轨...")
+        
+        all_tasks = []
+        fmt_choice = self.ap_fmt_var.get()
+        
+        # --- 阶段 1：目录映射与基准时长探测 ---
+        for v_f in video_files:
+            if self.is_cancelled: break
+            
+            base_name = os.path.splitext(v_f)[0]
+            v_path = os.path.join(v_dir, v_f)
+            a_sub_dir = os.path.join(a_dir, base_name)
+            
+            # 只有当同名音频子文件夹存在时才处理
+            if os.path.exists(a_sub_dir) and os.path.isdir(a_sub_dir):
+                v_dur = self.get_video_duration(v_path)
+                if v_dur <= 0: continue
+                
+                out_sub_dir = os.path.join(out_dir, base_name)
+                os.makedirs(out_sub_dir, exist_ok=True)
+                
+                for a_f in os.listdir(a_sub_dir):
+                    if a_f.lower().endswith(('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg')):
+                        a_path = os.path.join(a_sub_dir, a_f)
+                        out_path = os.path.join(out_sub_dir, a_f)
+                        
+                        all_tasks.append({
+                            'v_dur': v_dur,
+                            'a_path': a_path,
+                            'out_path': out_path,
+                            'fmt_choice': fmt_choice
+                        })
+
+        total_tasks = len(all_tasks)
+        if total_tasks == 0:
+            self.root.after(0, self.ap_reset_ui, "未找到任何匹配的音频轨！请检查子文件夹名称是否与视频名完全一致。")
+            return
+
+        # --- 阶段 2：定义并发自适应处理核心逻辑 ---
+        def run_pad_crop(task):
+            if self.is_cancelled: return False
+            
+            v_dur = task['v_dur']
+            a_path = task['a_path']
+            out_path = task['out_path']
+            choice = task['fmt_choice']
+            
+            # 动态探测原音频时长，决定是极速截断还是重编码填充
+            a_dur = self.get_video_duration(a_path)
+            diff = a_dur - v_dur
+            
+            encoder = "copy"
+            if choice == "WAV (无损 PCM)":
+                ext = ".wav"
+                encoder = "pcm_s16le"
+            elif choice == "MP3 (高品质 320k)":
+                ext = ".mp3"
+                encoder = "libmp3lame"
+            else:
+                ext = os.path.splitext(a_path)[1].lower()
+                
+            out_file = os.path.splitext(out_path)[0] + ext
+            
+            # 填充空白必须走解码滤镜，所以即便选了"保持原始"，也需要 fallback 对应的编码器
+            is_padding = False
+            if a_dur > 0 and diff < -0.05:
+                is_padding = True
+                if encoder == "copy":
+                    if ext == ".wav": encoder = "pcm_s16le"
+                    elif ext == ".mp3": encoder = "libmp3lame"
+                    else: encoder = "aac"
+            
+            # 异常情况兜底：如果无法探测音频时长，为了绝对安全，默认采取滤镜填充+切割双管齐下
+            if a_dur == 0:
+                is_padding = True
+                if encoder == "copy": encoder = "aac"
+
+            cmd = [self.ffmpeg_bin, "-y", "-i", a_path]
+            
+            if is_padding:
+                # 填充模式：走 apad 滤镜在末尾增加静音，再使用 -t 强行截断至视频的精准时长
+                cmd.extend(["-filter_complex", "[0:a]apad[aout]", "-map", "[aout]"])
+                cmd.extend(["-t", str(v_dur)])
+                cmd.extend(["-c:a", encoder])
+                if encoder == "libmp3lame": cmd.extend(["-b:a", "320k"])
+            else:
+                # 裁剪模式：直接使用流媒体拷贝(copy)极大提升速度和画质，并使用 -t 强行截断
+                cmd.extend(["-t", str(v_dur)])
+                cmd.extend(["-c:a", encoder])
+                if encoder == "libmp3lame": cmd.extend(["-b:a", "320k"])
+                
+            cmd.append(out_file)
+            
+            try:
+                proc = subprocess.Popen(
+                    cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, 
+                    creationflags=CREATE_NO_WINDOW
+                )
+                
+                with self.ap_proc_lock:
+                    self.ap_running_processes.add(proc)
+                    
+                proc.communicate()
+                
+                with self.ap_proc_lock:
+                    self.ap_running_processes.discard(proc)
+                    
+                return proc.returncode == 0
+            except Exception as e:
+                return False
+
+        # --- 阶段 3：多线程执行池 ---
+        completed_count = 0
+        success_count = 0
+        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        
+        self.root.after(0, self.ap_status_text.set, f"已分配 {max_workers} 条并发线程，正在极速对齐 {total_tasks} 条音频...")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(run_pad_crop, task): task for task in all_tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                if self.is_cancelled: break
+                
+                try:
+                    if future.result(): success_count += 1
+                except Exception: pass
+                    
+                completed_count += 1
+                
+                if completed_count % max(1, total_tasks // 100) == 0 or completed_count == total_tasks:
+                    percent = (completed_count / total_tasks) * 100
+                    self.root.after(0, self.ap_status_text.set, f"极速自适应对齐中... ({completed_count}/{total_tasks})")
+                    self.root.after(0, self.ap_progress_var.set, percent)
+
+        if self.is_cancelled:
+            self.root.after(0, self.ap_reset_ui, "处理已被紧急中止！已完成的音频文件已保留。")
+        else:
+            self.root.after(0, self.ap_progress_var.set, 100)
+            self.root.after(0, self.ap_reset_ui, f"自适应处理完成！共成功对齐裁剪/填充了 {success_count}/{total_tasks} 条音频轨。", True)
+
+    def ap_reset_ui(self, message, success=False):
+        self.is_ap_processing = False
+        self.btn_run_ap.config(state="normal")
+        self.btn_stop_ap.config(state="disabled")
+        self.ap_status_text.set(message)
         if success: messagebox.showinfo("完成", message)
         else: messagebox.showwarning("提示", message)
 

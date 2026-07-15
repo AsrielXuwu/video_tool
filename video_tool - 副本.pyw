@@ -296,6 +296,43 @@ class FFmpegUltimateTool:
         
         self.setup_loudness_ui()
 
+        # === 变量定义 (字幕区间响度统计专属) ===
+        self.sld_ass_dir = tk.StringVar()
+        self.sld_media_dir = tk.StringVar()
+        self.sld_out_dir = tk.StringVar()
+        self.sld_progress_var = tk.DoubleVar(value=0)
+        self.sld_status_text = tk.StringVar(value="等待开始...")
+        self.is_sld_processing = False
+        
+        # === 新增：并发进程池容器与线程安全锁 ===
+        self.sld_running_processes = set()
+        self.sld_proc_lock = threading.Lock()
+
+        # === 注册新标签页 ===
+        self.tab_sub_loudness = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_sub_loudness, text=" 字幕区间响度统计 ")
+        
+        self.setup_sub_loudness_ui()
+
+        # === 变量定义 (音频批量裁剪/填充专属) ===
+        self.ap_video_dir = tk.StringVar()
+        self.ap_audio_dir = tk.StringVar()
+        self.ap_out_dir = tk.StringVar()
+        self.ap_fmt_var = tk.StringVar(value="保持原始")
+        self.ap_progress_var = tk.DoubleVar(value=0)
+        self.ap_status_text = tk.StringVar(value="等待开始...")
+        self.is_ap_processing = False
+        
+        # 并发进程池容器与线程安全锁
+        self.ap_running_processes = set()
+        self.ap_proc_lock = threading.Lock()
+
+        # === 注册新标签页 ===
+        self.tab_audio_pad = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_audio_pad, text=" 音频批量裁剪/填充 ")
+        
+        self.setup_audio_pad_ui()
+
     def process_loudness_thread(self, in_dir, out_dir):
         import json
         from datetime import datetime
@@ -3162,6 +3199,501 @@ class FFmpegUltimateTool:
         self.btn_run_ld.config(state="normal")
         self.btn_stop_ld.config(state="disabled")
         self.ld_status_text.set(message)
+        if success: messagebox.showinfo("完成", message)
+        else: messagebox.showwarning("提示", message)
+
+# ================= 新增：字幕区间响度统计 UI 与逻辑 =================
+    def setup_sub_loudness_ui(self):
+        frame_dir = ttk.Frame(self.tab_sub_loudness, padding=20)
+        frame_dir.pack(fill="x")
+        frame_dir.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_dir, text="ASS字幕文件夹:").grid(row=0, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.sld_ass_dir).grid(row=0, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.sld_ass_dir)).grid(row=0, column=2, pady=10)
+
+        ttk.Label(frame_dir, text="对应音视频文件夹:").grid(row=1, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.sld_media_dir).grid(row=1, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.sld_media_dir)).grid(row=1, column=2, pady=10)
+
+        ttk.Label(frame_dir, text="表格输出目录:").grid(row=2, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.sld_out_dir).grid(row=2, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.sld_out_dir)).grid(row=2, column=2, pady=10)
+
+        tip_label = ttk.Label(self.tab_sub_loudness, text="说明：本功能将自动匹配同名 ASS 字幕与音视频文件。\n程序会逐行拆解时间轴，并测算该区间内音频的精确平均响度，最终输出极其详尽的 Excel 报告。", foreground="#555")
+        tip_label.pack(pady=5)
+
+        frame_status = ttk.Frame(self.tab_sub_loudness, padding=(20, 10))
+        frame_status.pack(fill="x", pady=5)
+
+        self.lbl_sld_status = ttk.Label(frame_status, textvariable=self.sld_status_text)
+        self.lbl_sld_status.pack(anchor="w")
+
+        self.sld_progress_bar = ttk.Progressbar(frame_status, orient="horizontal", mode="determinate", variable=self.sld_progress_var)
+        self.sld_progress_bar.pack(fill="x", pady=5)
+
+        frame_btn = ttk.Frame(self.tab_sub_loudness, padding=20)
+        frame_btn.pack(fill="x")
+
+        self.btn_run_sld = ttk.Button(frame_btn, text="开始区间统计", command=self.start_sub_loudness)
+        self.btn_run_sld.pack(side="left", expand=True, padx=10, ipadx=10, ipady=5)
+
+        self.btn_stop_sld = ttk.Button(frame_btn, text="停止", command=self.stop_sub_loudness, state="disabled")
+        self.btn_stop_sld.pack(side="right", expand=True, padx=10, ipadx=10, ipady=5)
+
+    def stop_sub_loudness(self):
+        if self.is_sld_processing:
+            self.is_cancelled = True
+            self.sld_status_text.set("正在强行中止所有并发检测，请稍候...")
+            self.btn_stop_sld.config(state="disabled")
+            
+            # === 新增：利用线程锁，瞬间猎杀所有并发执行的 FFmpeg 进程 ===
+            with self.sld_proc_lock:
+                for proc in self.sld_running_processes:
+                    try: proc.kill()
+                    except: pass
+                self.sld_running_processes.clear()
+
+    def start_sub_loudness(self):
+        ass_dir = self.sld_ass_dir.get().strip()
+        media_dir = self.sld_media_dir.get().strip()
+        out_dir = self.sld_out_dir.get().strip()
+        
+        if not os.path.exists(ass_dir) or not os.path.exists(media_dir) or not out_dir:
+            messagebox.showerror("错误", "请确保字幕目录、音视频目录和输出目录都已正确填写！")
+            return
+
+        if not os.path.exists(self.ffmpeg_bin):
+            messagebox.showerror("环境缺失", f"找不到 {self.ffmpeg_bin}！")
+            return
+
+        os.makedirs(out_dir, exist_ok=True)
+        self.is_sld_processing = True
+        self.is_cancelled = False
+        
+        self.btn_run_sld.config(state="disabled")
+        self.btn_stop_sld.config(state="normal")
+        self.sld_progress_var.set(0)
+        
+        threading.Thread(target=self.process_sub_loudness_thread, args=(ass_dir, media_dir, out_dir), daemon=True).start()
+
+    def process_sub_loudness_thread(self, ass_dir, media_dir, out_dir):
+        from datetime import datetime
+        import concurrent.futures
+        
+        supported_formats = ('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.mp4', '.mkv', '.mov', '.avi', '.ts', '.wmv', '.webm', '.flv', '.m4v')
+        
+        media_dict = {}
+        for f in os.listdir(media_dir):
+            if f.lower().endswith(supported_formats):
+                base_name = os.path.splitext(f)[0]
+                media_dict[base_name] = f
+                
+        ass_files = [f for f in os.listdir(ass_dir) if f.lower().endswith('.ass')]
+        
+        if not ass_files:
+            self.root.after(0, self.sld_reset_ui, "字幕目录中未找到任何 .ass 文件。")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        xlsx_filename = f"字幕区间响度精细报告_{timestamp}.xlsx"
+        xlsx_path = os.path.join(out_dir, xlsx_filename)
+
+        # 辅助解析函数
+        def parse_ass_time(t_str):
+            try:
+                h, m, s = t_str.split(':')
+                return int(h) * 3600 + int(m) * 60 + float(s)
+            except:
+                return 0.0
+
+        all_tasks = []
+        global_idx = 0  # 隐式全局排序索引，防止多线程乱序
+        
+        self.root.after(0, self.sld_status_text.set, "正在预读取并拆解所有字幕时间轴...")
+
+        # --- 阶段 1：光速预处理，组装所有并发任务 ---
+        for ass_file in ass_files:
+            if self.is_cancelled: break
+            
+            base_name = os.path.splitext(ass_file)[0]
+            if base_name not in media_dict: continue
+                
+            media_path = os.path.join(media_dir, media_dict[base_name])
+            ass_path = os.path.join(ass_dir, ass_file)
+            
+            format_cols = []
+            try:
+                with open(ass_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                    in_events = False
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('[Events]'):
+                            in_events = True
+                        elif in_events and line.startswith('Format:'):
+                            format_cols = [c.strip() for c in line[7:].split(',')]
+                        elif in_events and line.startswith('Dialogue:'):
+                            parts = [p.strip() for p in line[9:].split(',', len(format_cols)-1)]
+                            row_data = dict(zip(format_cols, parts))
+                            
+                            start_sec = parse_ass_time(row_data.get('Start', '0:00:00.00'))
+                            end_sec = parse_ass_time(row_data.get('End', '0:00:00.00'))
+                            dur_sec = end_sec - start_sec
+                            
+                            out_row = {'__index__': global_idx, 'ASS文件名': ass_file, '媒体文件名': media_dict[base_name]}
+                            out_row.update(row_data)
+                            
+                            all_tasks.append((media_path, start_sec, dur_sec, out_row))
+                            global_idx += 1
+            except Exception as e:
+                print(f"解析 ASS 失败: {e}")
+
+        total_tasks = len(all_tasks)
+        if total_tasks == 0:
+            self.root.after(0, self.sld_reset_ui, "未提取到任何有效的时间轴任务！请检查输入目录匹配关系。")
+            return
+
+        # --- 阶段 2：定义单行并发处理函数 ---
+        def analyze_task(args):
+            m_path, s_sec, d_sec, out_dict = args
+            if self.is_cancelled: return None
+            
+            loudness = None
+            err_msg = ""
+            
+            if d_sec > 0:
+                cmd = [
+                    self.ffmpeg_bin, '-hide_banner', '-nostats',
+                    '-ss', str(s_sec), '-t', str(d_sec),
+                    '-i', m_path, '-vn', '-map', '0:a:0?',
+                    '-filter:a', 'ebur128', '-f', 'null', '-'
+                ]
+                try:
+                    proc = subprocess.Popen(
+                        cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, 
+                        text=True, encoding='utf-8', errors='ignore', 
+                        creationflags=CREATE_NO_WINDOW
+                    )
+                    
+                    with self.sld_proc_lock:
+                        self.sld_running_processes.add(proc)
+                        
+                    _, err_output = proc.communicate()
+                    
+                    with self.sld_proc_lock:
+                        self.sld_running_processes.discard(proc)
+                        
+                    if not self.is_cancelled and err_output:
+                        matches = re.findall(r'I:\s+(-?\d+\.\d+)\s+LUFS', err_output)
+                        if matches: loudness = float(matches[-1])
+                except Exception as e:
+                    err_msg = str(e)
+            else:
+                err_msg = "时间轴无效或时长<=0"
+                
+            out_dict['区间响度 (LUFS)'] = loudness if loudness is not None else ""
+            out_dict['状态'] = '成功' if loudness is not None else '失败'
+            out_dict['错误信息'] = err_msg
+            return out_dict
+
+        # --- 阶段 3：全火力多线程并发启动 ---
+        detailed_data = []
+        success_line_count = 0
+        completed_count = 0
+        
+        # 获取最大线程数 (I/O密集型任务，取 CPU 核心数的 2 倍，最高封顶 32 线程防卡死系统)
+        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        
+        self.root.after(0, self.sld_status_text.set, f"已分配 {max_workers} 条并发线程，正在极速分析 {total_tasks} 条字幕...")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(analyze_task, task): task for task in all_tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                if self.is_cancelled: break
+                
+                try:
+                    res_row = future.result()
+                    if res_row:
+                        detailed_data.append(res_row)
+                        if res_row['状态'] == '成功': success_line_count += 1
+                except Exception as e:
+                    print(f"并发执行异常: {e}")
+                    
+                completed_count += 1
+                
+                # 动态限流更新 UI：进度条每 1% 更新一次，防止 tkinter 被过于频繁的消息阻塞卡死
+                if completed_count % max(1, total_tasks // 100) == 0 or completed_count == total_tasks:
+                    percent = (completed_count / total_tasks) * 100
+                    self.root.after(0, self.sld_status_text.set, f"多线程分析进度: {completed_count}/{total_tasks}")
+                    self.root.after(0, self.sld_progress_var.set, percent)
+
+        # --- 阶段 4：结果排序与最终导出 ---
+        if detailed_data:
+            try:
+                self.root.after(0, self.sld_status_text.set, "分析结束，正在按原始时间轴重新排序并导出报告...")
+                # 通过预先埋入的 __index__ 进行强制重排，修复多线程导致的乱序
+                detailed_data.sort(key=lambda x: x['__index__'])
+                # 清除排序所用的隐藏索引列
+                for row in detailed_data:
+                    del row['__index__']
+                
+                df = pd.DataFrame(detailed_data)
+                df.to_excel(xlsx_path, index=False)
+            except Exception as e:
+                self.root.after(0, self.sld_reset_ui, f"导出 Excel 表格失败: {e}", False)
+                return
+
+        if self.is_cancelled:
+            self.root.after(0, self.sld_reset_ui, f"任务已被紧急中止！部分已完成的数据已强行保全至：\n{xlsx_filename}")
+        else:
+            self.root.after(0, self.sld_progress_var.set, 100)
+            self.root.after(0, self.sld_reset_ui, f"极速统计完成！共成功获取 {success_line_count}/{total_tasks} 条字幕片段的响度。\n报告已生成：{xlsx_filename}", True)
+            
+    def sld_reset_ui(self, message, success=False):
+        self.is_sld_processing = False
+        self.current_process = None
+        self.btn_run_sld.config(state="normal")
+        self.btn_stop_sld.config(state="disabled")
+        self.sld_status_text.set(message)
+        if success: messagebox.showinfo("完成", message)
+        else: messagebox.showwarning("提示", message)
+
+# ================= 新增：音频批量裁剪/填充 UI 与逻辑 =================
+    def setup_audio_pad_ui(self):
+        frame_dir = ttk.Frame(self.tab_audio_pad, padding=20)
+        frame_dir.pack(fill="x")
+        frame_dir.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_dir, text="基准视频目录:").grid(row=0, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.ap_video_dir).grid(row=0, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ap_video_dir)).grid(row=0, column=2, pady=10)
+
+        ttk.Label(frame_dir, text="待处理音频主目录:").grid(row=1, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.ap_audio_dir).grid(row=1, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ap_audio_dir)).grid(row=1, column=2, pady=10)
+
+        ttk.Label(frame_dir, text="输出主目录:").grid(row=2, column=0, sticky="e", pady=10)
+        self.setup_dnd_entry(frame_dir, self.ap_out_dir).grid(row=2, column=1, sticky="we", padx=5, pady=10)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.ap_out_dir)).grid(row=2, column=2, pady=10)
+
+        frame_opts = ttk.LabelFrame(self.tab_audio_pad, text="处理规则设定", padding=10)
+        frame_opts.pack(fill="x", padx=20, pady=5)
+        
+        ttk.Label(frame_opts, text="输出格式:").pack(side="left", padx=5)
+        cb_fmt = ttk.Combobox(frame_opts, textvariable=self.ap_fmt_var, values=["保持原始", "WAV (无损 PCM)", "MP3 (高品质 320k)"], state="readonly", width=20)
+        cb_fmt.pack(side="left", padx=5)
+
+        tip_label = ttk.Label(self.tab_audio_pad, text="说明：此功能将根据视频的精确时长，自动处理同名子文件夹中的所有音频。\n【超长裁剪】会启用无损复制(不重编码)；【过短填充】会自动在尾部补齐纯数字静音。\n目录结构示例: 音频主目录/视频名/音频轨1.wav", foreground="#555")
+        tip_label.pack(pady=15)
+
+        frame_status = ttk.Frame(self.tab_audio_pad, padding=(20, 10))
+        frame_status.pack(fill="x", pady=5)
+
+        self.lbl_ap_status = ttk.Label(frame_status, textvariable=self.ap_status_text)
+        self.lbl_ap_status.pack(anchor="w")
+
+        self.ap_progress_bar = ttk.Progressbar(frame_status, orient="horizontal", mode="determinate", variable=self.ap_progress_var)
+        self.ap_progress_bar.pack(fill="x", pady=5)
+
+        frame_btn = ttk.Frame(self.tab_audio_pad, padding=20)
+        frame_btn.pack(fill="x")
+
+        self.btn_run_ap = ttk.Button(frame_btn, text="开始自适应处理", command=self.start_audio_pad)
+        self.btn_run_ap.pack(side="left", expand=True, padx=10, ipadx=10, ipady=5)
+
+        self.btn_stop_ap = ttk.Button(frame_btn, text="停止", command=self.stop_audio_pad, state="disabled")
+        self.btn_stop_ap.pack(side="right", expand=True, padx=10, ipadx=10, ipady=5)
+
+    def stop_audio_pad(self):
+        if self.is_ap_processing:
+            self.is_cancelled = True
+            self.ap_status_text.set("正在强行中止所有并发处理，请稍候...")
+            self.btn_stop_ap.config(state="disabled")
+            
+            with self.ap_proc_lock:
+                for proc in self.ap_running_processes:
+                    try: proc.kill()
+                    except: pass
+                self.ap_running_processes.clear()
+
+    def start_audio_pad(self):
+        v_dir = self.ap_video_dir.get().strip()
+        a_dir = self.ap_audio_dir.get().strip()
+        out_dir = self.ap_out_dir.get().strip()
+        
+        if not os.path.exists(v_dir) or not os.path.exists(a_dir) or not out_dir:
+            messagebox.showerror("错误", "请确保所有目录路径都已正确填写！")
+            return
+
+        if not os.path.exists(self.ffmpeg_bin) or not os.path.exists(self.ffprobe_bin):
+            messagebox.showerror("环境缺失", "找不到核心组件 FFmpeg 或 FFprobe！")
+            return
+
+        os.makedirs(out_dir, exist_ok=True)
+        self.is_ap_processing = True
+        self.is_cancelled = False
+        
+        self.btn_run_ap.config(state="disabled")
+        self.btn_stop_ap.config(state="normal")
+        self.ap_progress_var.set(0)
+        
+        threading.Thread(target=self.process_audio_pad_thread, args=(v_dir, a_dir, out_dir), daemon=True).start()
+
+    def process_audio_pad_thread(self, v_dir, a_dir, out_dir):
+        import concurrent.futures
+        
+        video_files = [f for f in os.listdir(v_dir) if os.path.splitext(f)[1].lower() in self.supported_exts]
+        if not video_files:
+            self.root.after(0, self.ap_reset_ui, "视频目录中未找到支持的视频文件。")
+            return
+
+        self.root.after(0, self.ap_status_text.set, "正在扫描视频基准时长与目标音频轨...")
+        
+        all_tasks = []
+        fmt_choice = self.ap_fmt_var.get()
+        
+        # --- 阶段 1：目录映射与基准时长探测 ---
+        for v_f in video_files:
+            if self.is_cancelled: break
+            
+            base_name = os.path.splitext(v_f)[0]
+            v_path = os.path.join(v_dir, v_f)
+            a_sub_dir = os.path.join(a_dir, base_name)
+            
+            # 只有当同名音频子文件夹存在时才处理
+            if os.path.exists(a_sub_dir) and os.path.isdir(a_sub_dir):
+                v_dur = self.get_video_duration(v_path)
+                if v_dur <= 0: continue
+                
+                out_sub_dir = os.path.join(out_dir, base_name)
+                os.makedirs(out_sub_dir, exist_ok=True)
+                
+                for a_f in os.listdir(a_sub_dir):
+                    if a_f.lower().endswith(('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg')):
+                        a_path = os.path.join(a_sub_dir, a_f)
+                        out_path = os.path.join(out_sub_dir, a_f)
+                        
+                        all_tasks.append({
+                            'v_dur': v_dur,
+                            'a_path': a_path,
+                            'out_path': out_path,
+                            'fmt_choice': fmt_choice
+                        })
+
+        total_tasks = len(all_tasks)
+        if total_tasks == 0:
+            self.root.after(0, self.ap_reset_ui, "未找到任何匹配的音频轨！请检查子文件夹名称是否与视频名完全一致。")
+            return
+
+        # --- 阶段 2：定义并发自适应处理核心逻辑 ---
+        def run_pad_crop(task):
+            if self.is_cancelled: return False
+            
+            v_dur = task['v_dur']
+            a_path = task['a_path']
+            out_path = task['out_path']
+            choice = task['fmt_choice']
+            
+            # 动态探测原音频时长，决定是极速截断还是重编码填充
+            a_dur = self.get_video_duration(a_path)
+            diff = a_dur - v_dur
+            
+            encoder = "copy"
+            if choice == "WAV (无损 PCM)":
+                ext = ".wav"
+                encoder = "pcm_s16le"
+            elif choice == "MP3 (高品质 320k)":
+                ext = ".mp3"
+                encoder = "libmp3lame"
+            else:
+                ext = os.path.splitext(a_path)[1].lower()
+                
+            out_file = os.path.splitext(out_path)[0] + ext
+            
+            # 填充空白必须走解码滤镜，所以即便选了"保持原始"，也需要 fallback 对应的编码器
+            is_padding = False
+            if a_dur > 0 and diff < -0.05:
+                is_padding = True
+                if encoder == "copy":
+                    if ext == ".wav": encoder = "pcm_s16le"
+                    elif ext == ".mp3": encoder = "libmp3lame"
+                    else: encoder = "aac"
+            
+            # 异常情况兜底：如果无法探测音频时长，为了绝对安全，默认采取滤镜填充+切割双管齐下
+            if a_dur == 0:
+                is_padding = True
+                if encoder == "copy": encoder = "aac"
+
+            cmd = [self.ffmpeg_bin, "-y", "-i", a_path]
+            
+            if is_padding:
+                # 填充模式：走 apad 滤镜在末尾增加静音，再使用 -t 强行截断至视频的精准时长
+                cmd.extend(["-filter_complex", "[0:a]apad[aout]", "-map", "[aout]"])
+                cmd.extend(["-t", str(v_dur)])
+                cmd.extend(["-c:a", encoder])
+                if encoder == "libmp3lame": cmd.extend(["-b:a", "320k"])
+            else:
+                # 裁剪模式：直接使用流媒体拷贝(copy)极大提升速度和画质，并使用 -t 强行截断
+                cmd.extend(["-t", str(v_dur)])
+                cmd.extend(["-c:a", encoder])
+                if encoder == "libmp3lame": cmd.extend(["-b:a", "320k"])
+                
+            cmd.append(out_file)
+            
+            try:
+                proc = subprocess.Popen(
+                    cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, 
+                    creationflags=CREATE_NO_WINDOW
+                )
+                
+                with self.ap_proc_lock:
+                    self.ap_running_processes.add(proc)
+                    
+                proc.communicate()
+                
+                with self.ap_proc_lock:
+                    self.ap_running_processes.discard(proc)
+                    
+                return proc.returncode == 0
+            except Exception as e:
+                return False
+
+        # --- 阶段 3：多线程执行池 ---
+        completed_count = 0
+        success_count = 0
+        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        
+        self.root.after(0, self.ap_status_text.set, f"已分配 {max_workers} 条并发线程，正在极速对齐 {total_tasks} 条音频...")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(run_pad_crop, task): task for task in all_tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                if self.is_cancelled: break
+                
+                try:
+                    if future.result(): success_count += 1
+                except Exception: pass
+                    
+                completed_count += 1
+                
+                if completed_count % max(1, total_tasks // 100) == 0 or completed_count == total_tasks:
+                    percent = (completed_count / total_tasks) * 100
+                    self.root.after(0, self.ap_status_text.set, f"极速自适应对齐中... ({completed_count}/{total_tasks})")
+                    self.root.after(0, self.ap_progress_var.set, percent)
+
+        if self.is_cancelled:
+            self.root.after(0, self.ap_reset_ui, "处理已被紧急中止！已完成的音频文件已保留。")
+        else:
+            self.root.after(0, self.ap_progress_var.set, 100)
+            self.root.after(0, self.ap_reset_ui, f"自适应处理完成！共成功对齐裁剪/填充了 {success_count}/{total_tasks} 条音频轨。", True)
+
+    def ap_reset_ui(self, message, success=False):
+        self.is_ap_processing = False
+        self.btn_run_ap.config(state="normal")
+        self.btn_stop_ap.config(state="disabled")
+        self.ap_status_text.set(message)
         if success: messagebox.showinfo("完成", message)
         else: messagebox.showwarning("提示", message)
 

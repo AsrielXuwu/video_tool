@@ -164,6 +164,7 @@ class FFmpegUltimateTool:
         # === 变量定义 (音视频合并专属) ===
         self.m_fmt_var = tk.StringVar(value="保持原格式")
         self.m_fmt_options = ["保持原格式", "MP4", "MKV", "MOV", "AVI"]
+        self.m_force_resample = tk.BooleanVar(value=True) # 新增: 强制重采样防爆保护 (默认开启)
 
         # === 变量定义 (音视频合并专属) ===
         self.m_audio_only = tk.BooleanVar(value=False) # 新增: 只输出音频模式
@@ -1528,8 +1529,13 @@ class FFmpegUltimateTool:
         self.m_spin_dn_b = ttk.Spinbox(frame_dn, from_=1, to=97, textvariable=self.m_dn_bgm_val, width=3)
         self.m_spin_dn_b.pack(side="left")
 
-        self.m_chk_keep_orig_audio = ttk.Checkbutton(lf_left, text="合并外部音频时，仍保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
-        self.m_chk_keep_orig_audio.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        # === 替换为横向紧凑布局，加入重采样保护选项 ===
+        f_row5 = ttk.Frame(lf_left)
+        f_row5.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        self.m_chk_keep_orig_audio = ttk.Checkbutton(f_row5, text="保留原视频音轨", variable=self.m_keep_orig_audio, command=self.update_m_audio_ui)
+        self.m_chk_keep_orig_audio.pack(side="left", padx=(0, 15))
+        self.m_chk_resample = ttk.Checkbutton(f_row5, text="强制重采样保护 (统一48kHz, 防多轨/静音崩溃)", variable=self.m_force_resample, command=self.update_m_audio_ui)
+        self.m_chk_resample.pack(side="left")
 
         ttk.Radiobutton(lf_left, text="混合后整体平衡 (尽量保持原响度，不可手动调整)", variable=self.m_audio_mode, value=2, command=self.update_m_audio_ui).grid(row=6, column=0, columnspan=2, sticky="w", pady=2)
         
@@ -1862,7 +1868,10 @@ class FFmpegUltimateTool:
             self.m_cb_bvol.config(state="disabled")
 
         # === 声道与降噪控制框互斥锁 ===
-        if mode != 3: # 只要不选“纯转封装拷贝”，且勾选了原声，都允许单独设声道和降噪
+        if mode != 3: # 只要不选“纯转封装拷贝”，都允许自由开启重采样
+            # 💡 核心修复：确保这两行与 if self.m_keep_orig_audio.get(): 是同级平行的！
+            self.m_chk_resample.config(state="normal") 
+            
             if self.m_keep_orig_audio.get():
                 self.m_cb_och.config(state="readonly")
                 self.m_chk_dn_o.config(state="normal")
@@ -1879,6 +1888,9 @@ class FFmpegUltimateTool:
             self.m_spin_dn_v.config(state="normal")
             self.m_spin_dn_b.config(state="normal")
         else:
+            # 选了纯拷贝，强行变灰并禁用重采样
+            self.m_chk_resample.config(state="disabled") 
+            
             self.m_cb_och.config(state="disabled")
             self.m_cb_vch.config(state="disabled")
             self.m_cb_bch.config(state="disabled")
@@ -2264,6 +2276,9 @@ class FFmpegUltimateTool:
             dn_filter_v = f"highpass=f=80,afftdn=nr={nr_v}:nf=-40"
             dn_filter_b = f"highpass=f=50,afftdn=nr={nr_b}:nf=-25,lowpass=f=15000"
 
+            # === 新增：构建底层重采样装甲 ===
+            resample_filter = "aresample=48000:async=1" if self.m_force_resample.get() else ""
+
             if not is_audio_only: dur_v = self.get_video_duration(v_path)
             else: dur_v = 0
             
@@ -2311,6 +2326,7 @@ class FFmpegUltimateTool:
                         v_multi_inputs = []
                         for _i, idx in enumerate(v_idx_list):
                             chain = []
+                            if resample_filter: chain.append(resample_filter) # <--- 新增插入
                             if self.m_dn_voice.get(): chain.append(dn_filter_v)
                             if v_multi_norm == 3: chain.append(f"loudnorm=I={v_multi_lufs_val}:TP=-1.5:LRA=11")
                             
@@ -2342,6 +2358,7 @@ class FFmpegUltimateTool:
                         a_out = idx
                     else:
                         a_chain = []
+                        if resample_filter: a_chain.append(resample_filter) # <--- 新增插入
                         if dn_filter_str: a_chain.append(dn_filter_str)
                         if mode == 4 and not (has_a1 and self.m_skip_voice_norm.get()): 
                             a_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11") 
@@ -2361,6 +2378,7 @@ class FFmpegUltimateTool:
                     mix_inputs = []
                     if has_a0_in_filter:
                         a0_chain = []
+                        if resample_filter: a0_chain.append(resample_filter) # <--- 新增插入
                         if self.m_dn_orig.get(): a0_chain.append(dn_filter_o)
                         if mode == 4: a0_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_o_filter: a0_chain.append(ch_o_filter)
@@ -2370,6 +2388,7 @@ class FFmpegUltimateTool:
                         
                     if has_a1:
                         a1_chain = []
+                        if resample_filter: a1_chain.append(resample_filter) # <--- 新增插入
                         if self.m_dn_voice.get() and not is_voice_mixed: a1_chain.append(dn_filter_v) 
                         if mode == 4 and not self.m_skip_voice_norm.get(): a1_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_v_filter: a1_chain.append(ch_v_filter) 
@@ -2382,6 +2401,7 @@ class FFmpegUltimateTool:
                         
                     if has_a2:
                         a2_chain = []
+                        if resample_filter: a2_chain.append(resample_filter) # <--- 新增插入
                         if self.m_dn_bgm.get(): a2_chain.append(dn_filter_b) 
                         if mode == 4: a2_chain.append(f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11")
                         if ch_b_filter: a2_chain.append(ch_b_filter) 

@@ -2311,8 +2311,10 @@ class FFmpegUltimateTool:
                 
                 if force_tempo and dur_v > 0:
                     dur_a = 0
-                    if has_a1: dur_a = self.get_video_duration(a1_paths[0])
-                    elif has_a2: dur_a = self.get_video_duration(a2_path)
+                    if has_a1: 
+                        dur_a = max([self.get_video_duration(p) for p in a1_paths]) if a1_paths else 0
+                    elif has_a2: 
+                        dur_a = self.get_video_duration(a2_path)
                     
                     if dur_a > 0:
                         ratio = dur_a / dur_v 
@@ -2341,13 +2343,22 @@ class FFmpegUltimateTool:
                         try: v_multi_lufs_val = float(self.m_voice_multi_lufs.get())
                         except: v_multi_lufs_val = -12.0
                         
+                        # 核心修复 1：预先获取所有分轨的时长，找出最大时长作为混音基准
+                        a1_durs = [self.get_video_duration(p) for p in a1_paths]
+                        max_a1_dur = max(a1_durs) if a1_durs else 0
+                        
                         v_multi_inputs = []
                         for _i, idx in enumerate(v_idx_list):
                             chain = []
                             if resample_filter: chain.append(resample_filter)
-                            if ch_v_filter: chain.append(ch_v_filter) # <--- 核心修复：确保不同格式分轨声道一致(防 mono 与 stereo 混合崩溃)
+                            if ch_v_filter: chain.append(ch_v_filter)
                             if self.m_dn_voice.get(): chain.append(dn_filter_v)
                             if v_multi_norm == 3: chain.append(f"loudnorm=I={v_multi_lufs_val}:TP=-1.5:LRA=11")
+                            
+                            # 核心修复 2：短音频在降噪/响度平衡后，末尾自动补齐无损静音至最大时长，防止 amix 中途断流掐线
+                            cur_d = a1_durs[_i] if _i < len(a1_durs) else 0
+                            if max_a1_dur > 0 and cur_d > 0 and (cur_d < max_a1_dur - 0.05):
+                                chain.append(f"apad,atrim=0:{max_a1_dur:.3f},asetpts=PTS-STARTPTS")
                             
                             if chain:
                                 fc_parts.append(f"[{idx}:a:0]{','.join(chain)}[v_sub_{_i}]")

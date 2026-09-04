@@ -2129,7 +2129,7 @@ class FFmpegUltimateTool:
                 if self.m_voice_multi_mode.get():
                     sub_dir = os.path.join(a_dir1, base_name)
                     if os.path.exists(sub_dir) and os.path.isdir(sub_dir):
-                        for f in os.listdir(sub_dir):
+                        for f in sorted(os.listdir(sub_dir)):
                             if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']:
                                 a1_paths.append(os.path.join(sub_dir, f))
                 else:
@@ -2344,7 +2344,8 @@ class FFmpegUltimateTool:
                         v_multi_inputs = []
                         for _i, idx in enumerate(v_idx_list):
                             chain = []
-                            if resample_filter: chain.append(resample_filter) # <--- 新增插入
+                            if resample_filter: chain.append(resample_filter)
+                            if ch_v_filter: chain.append(ch_v_filter) # <--- 核心修复：确保不同格式分轨声道一致(防 mono 与 stereo 混合崩溃)
                             if self.m_dn_voice.get(): chain.append(dn_filter_v)
                             if v_multi_norm == 3: chain.append(f"loudnorm=I={v_multi_lufs_val}:TP=-1.5:LRA=11")
                             

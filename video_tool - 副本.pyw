@@ -334,6 +334,23 @@ class FFmpegUltimateTool:
         
         self.setup_audio_pad_ui()
 
+        # === 变量定义 (生成静音音频专属) ===
+        self.mt_out_dir = tk.StringVar()
+        self.mt_durations = tk.StringVar(value="00:00:05.000, 00:01:30.000")
+        self.mt_filenames = tk.StringVar(value="")
+        self.mt_fmt_var = tk.StringVar(value="WAV (无损 PCM)")
+        self.mt_fmt_options = ["WAV (无损 PCM)", "FLAC (无损压缩)", "MP3 (320kbps)", "AAC (256kbps)"]
+        
+        self.mt_progress_var = tk.DoubleVar(value=0)
+        self.mt_status_text = tk.StringVar(value="等待开始...")
+        self.is_mt_processing = False
+
+        # === 注册新标签页 ===
+        self.tab_mute = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_mute, text=" 生成静音音频 ")
+        
+        self.setup_mute_ui()
+
     def process_loudness_thread(self, in_dir, out_dir):
         import json
         from datetime import datetime
@@ -2205,7 +2222,8 @@ class FFmpegUltimateTool:
 
             fc_parts = []
             v_out = "0:v:0?"
-            a_out = "0:a:0?" if has_a0_in_filter else ""
+            # 核心修复：即使不进入混音滤镜，只要勾选了保留原音，就强制映射原始音轨
+            a_out = "0:a:0?" if (not is_audio_only and self.m_keep_orig_audio.get()) else ""
 
             # -- 智能分辨率缩放与滤镜 (纯音频跳过) --
             temp_sub_path = None
@@ -3714,6 +3732,182 @@ class FFmpegUltimateTool:
         self.btn_run_ap.config(state="normal")
         self.btn_stop_ap.config(state="disabled")
         self.ap_status_text.set(message)
+        if success: messagebox.showinfo("完成", message)
+        else: messagebox.showwarning("提示", message)
+
+# ================= 新增：静音音频生成 UI 与逻辑 =================
+    # ================= 新增：静音音频生成 UI 与逻辑 =================
+    def setup_mute_ui(self):
+        frame_dir = ttk.Frame(self.tab_mute, padding=20)
+        frame_dir.pack(fill="x")
+        frame_dir.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_dir, text="音频输出目录:").grid(row=0, column=0, sticky="e", pady=15)
+        self.setup_dnd_entry(frame_dir, self.mt_out_dir).grid(row=0, column=1, sticky="we", padx=5, pady=15)
+        ttk.Button(frame_dir, text="浏览...", command=lambda: self.browse_dir(self.mt_out_dir)).grid(row=0, column=2, pady=15)
+
+        frame_opts = ttk.LabelFrame(self.tab_mute, text="静音音频参数设定", padding=10)
+        frame_opts.pack(fill="x", padx=20, pady=5)
+        frame_opts.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_opts, text="指定时长 (HH:MM:SS.xxx):").grid(row=0, column=0, sticky="e", pady=10)
+        ttk.Entry(frame_opts, textvariable=self.mt_durations).grid(row=0, column=1, sticky="we", padx=5)
+        ttk.Label(frame_opts, text="*必填。逗号分隔，例如: 00:00:05.000, 00:01:30.500", foreground="#555").grid(row=0, column=2, sticky="w", pady=10)
+
+        ttk.Label(frame_opts, text="自定义文件名:").grid(row=1, column=0, sticky="e", pady=10)
+        ttk.Entry(frame_opts, textvariable=self.mt_filenames).grid(row=1, column=1, sticky="we", padx=5)
+        ttk.Label(frame_opts, text="*可选。逗号分隔，如: 待机音频, 转场留白 (不填则自动命名)", foreground="#555").grid(row=1, column=2, sticky="w", pady=10)
+
+        ttk.Label(frame_opts, text="输出音频格式:").grid(row=2, column=0, sticky="e", pady=10)
+        ttk.Combobox(frame_opts, textvariable=self.mt_fmt_var, values=self.mt_fmt_options, state="readonly", width=18).grid(row=2, column=1, sticky="w", padx=5, pady=10)
+        
+        tip_label = ttk.Label(self.tab_mute, text="提示：底层生成的音频均遵循广播级标准 (48kHz, 双声道)，可完美兼容多轨混音器防爆要求。", foreground="#888")
+        tip_label.pack(pady=10)
+
+        frame_status = ttk.Frame(self.tab_mute, padding=(20, 10))
+        frame_status.pack(fill="x", pady=10)
+
+        self.lbl_mt_status = ttk.Label(frame_status, textvariable=self.mt_status_text)
+        self.lbl_mt_status.pack(anchor="w")
+
+        self.mt_progress_bar = ttk.Progressbar(frame_status, orient="horizontal", mode="determinate", variable=self.mt_progress_var)
+        self.mt_progress_bar.pack(fill="x", pady=5)
+
+        frame_btn = ttk.Frame(self.tab_mute, padding=20)
+        frame_btn.pack(fill="x")
+
+        self.btn_run_mt = ttk.Button(frame_btn, text="开始生成", command=self.start_mute)
+        self.btn_run_mt.pack(side="left", expand=True, padx=10, ipadx=10, ipady=5)
+
+        self.btn_stop_mt = ttk.Button(frame_btn, text="停止生成", command=self.stop_mute, state="disabled")
+        self.btn_stop_mt.pack(side="right", expand=True, padx=10, ipadx=10, ipady=5)
+
+    def process_mute_thread(self):
+        out_dir = self.mt_out_dir.get().strip()
+        durations_str = self.mt_durations.get().strip()
+        filenames_str = self.mt_filenames.get().strip()
+        fmt_choice = self.mt_fmt_var.get()
+
+        # 智能解析时长：调用内置解析器，支持 HH:MM:SS.xxx
+        try:
+            durations_str = durations_str.replace("，", ",")
+            raw_d_list = [d.strip() for d in durations_str.split(",") if d.strip()]
+            d_list = []
+            
+            for raw_d in raw_d_list:
+                sec = self.parse_time_str_to_sec(raw_d)
+                if sec <= 0: raise ValueError
+                # 记录元组：(原始输入文本, 转换后的秒数)
+                d_list.append((raw_d, sec))
+                
+            if not d_list: raise ValueError
+        except:
+            self.root.after(0, self.mt_reset_ui, "时长格式不正确！\n请确保格式类似 00:00:05.000 或直接输入秒数，并用逗号分隔。")
+            return
+
+        # 智能解析文件名
+        f_list = []
+        if filenames_str:
+            filenames_str = filenames_str.replace("，", ",")
+            f_list = [f.strip() for f in filenames_str.split(",") if f.strip()]
+
+        # 解析编码器和后缀
+        if "WAV" in fmt_choice: ext, codec = ".wav", "pcm_s16le"
+        elif "FLAC" in fmt_choice: ext, codec = ".flac", "flac"
+        elif "MP3" in fmt_choice: ext, codec = ".mp3", "libmp3lame"
+        elif "AAC" in fmt_choice: ext, codec = ".aac", "aac"
+        else: ext, codec = ".wav", "pcm_s16le"
+
+        total = len(d_list)
+        success_count = 0
+
+        for i, (raw_dur, dur_sec) in enumerate(d_list):
+            if self.is_cancelled: break
+
+            # 文件名自动分配逻辑
+            if i < len(f_list) and f_list[i]:
+                base_name = f_list[i]
+            else:
+                # 核心修复：将时间字符串中的冒号替换为短横线，防止 Windows 路径创建失败
+                safe_time_str = raw_dur.replace(":", "-")
+                base_name = f"静音_{safe_time_str}"
+
+            filename = base_name + ext
+            out_path = os.path.join(out_dir, filename)
+
+            # 调用 ffmpeg 原生 lavfi 虚无音频发生器 (传入转换后的秒数绝对精确)
+            cmd = [
+                self.ffmpeg_bin, "-y",
+                "-f", "lavfi",
+                "-i", "anullsrc=r=48000:cl=stereo", 
+                "-t", str(dur_sec),
+                "-c:a", codec
+            ]
+            
+            if "MP3" in fmt_choice: cmd.extend(["-b:a", "320k"])
+            elif "AAC" in fmt_choice: cmd.extend(["-b:a", "256k"])
+            
+            cmd.append(out_path)
+
+            self.root.after(0, self.mt_status_text.set, f"正在生成 ({i+1}/{total}): {filename}")
+            self.root.after(0, self.mt_progress_var.set, (i / total) * 100)
+
+            try:
+                self.current_process = subprocess.Popen(
+                    cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
+                    encoding='utf-8', errors='ignore', creationflags=CREATE_NO_WINDOW
+                )
+                
+                _, _ = self.current_process.communicate()
+
+                if self.current_process.returncode == 0:
+                    success_count += 1
+            except Exception as e:
+                print(f"生成 {filename} 时发生异常: {e}")
+
+        if self.is_cancelled:
+            self.root.after(0, self.mt_reset_ui, "生成已中止！")
+        else:
+            self.root.after(0, self.mt_progress_var.set, 100)
+            self.root.after(0, self.mt_reset_ui, f"全部生成完毕！成功生成 {success_count} 个音频文件。", True)
+
+    def stop_mute(self):
+        if self.is_mt_processing:
+            self.is_cancelled = True
+            self.mt_status_text.set("正在中止生成，请稍候...")
+            self.btn_stop_mt.config(state="disabled")
+            if self.current_process:
+                try: self.current_process.kill()
+                except Exception: pass
+
+    def start_mute(self):
+        out_dir = self.mt_out_dir.get().strip()
+        durations_str = self.mt_durations.get().strip()
+
+        if not out_dir or not durations_str:
+            messagebox.showerror("错误", "请检查输出目录和指定的时长是否已填写！")
+            return
+
+        if not os.path.exists(self.ffmpeg_bin):
+            messagebox.showerror("环境缺失", f"找不到 {self.ffmpeg_bin}！")
+            return
+
+        os.makedirs(out_dir, exist_ok=True)
+        self.is_mt_processing = True
+        self.is_cancelled = False
+
+        self.btn_run_mt.config(state="disabled")
+        self.btn_stop_mt.config(state="normal")
+        self.mt_progress_var.set(0)
+
+        threading.Thread(target=self.process_mute_thread, daemon=True).start()
+
+    def mt_reset_ui(self, message, success=False):
+        self.is_mt_processing = False
+        self.current_process = None
+        self.btn_run_mt.config(state="normal")
+        self.btn_stop_mt.config(state="disabled")
+        self.mt_status_text.set(message)
         if success: messagebox.showinfo("完成", message)
         else: messagebox.showwarning("提示", message)
 

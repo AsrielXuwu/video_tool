@@ -2045,20 +2045,83 @@ class FFmpegUltimateTool:
             if s_dir and os.path.exists(s_dir):
                 self.root.after(0, self.m_status_text.set, "正在全局预检 ASS 字体完整性...")
                 global_missing_fonts = set()
-                sys_fonts = [f.lower() for f in tkfont.families()]
+                sys_fonts = [f.lower().strip() for f in tkfont.families()]
                 
+                # 1. 扩充中英文字体映射字典（全面涵盖思源黑体/宋体及常见系统字体）
                 font_alias_map = {
-                    "simhei": "黑体", "microsoft yahei": "微软雅黑", "simsun": "宋体",
-                    "fangsong": "仿宋", "kaiti": "楷体", "stsong": "华文宋体",
-                    "stfangsong": "华文仿宋", "stxihei": "华文细黑",
-                    "stkaiti": "华文楷体", "youyuan": "幼圆", "lisu": "隶书"
+                    "simhei": "黑体",
+                    "microsoft yahei": "微软雅黑",
+                    "microsoft yahei ui": "微软雅黑",
+                    "simsun": "宋体",
+                    "nsimsun": "新宋体",
+                    "fangsong": "仿宋",
+                    "kaiti": "楷体",
+                    "stsong": "华文宋体",
+                    "stfangsong": "华文仿宋",
+                    "stxihei": "华文细黑",
+                    "stkaiti": "华文楷体",
+                    "stzhongsong": "华文中宋",
+                    "youyuan": "幼圆",
+                    "lisu": "隶书",
+                    "dengxian": "等线",
+                    "pingfang sc": "苹方",
+                    # 思源黑体族 (Adobe Source Han & Google Noto)
+                    "source han sans": "思源黑体",
+                    "source han sans sc": "思源黑体",
+                    "source han sans cn": "思源黑体",
+                    "source han sans tc": "思源黑体",
+                    "source han sans hk": "思源黑体",
+                    "source han sans k": "思源黑体",
+                    "noto sans sc": "思源黑体",
+                    "noto sans cjk sc": "思源黑体",
+                    "noto sans cn": "思源黑体",
+                    "noto sans cjk cn": "思源黑体",
+                    # 思源宋体族
+                    "source han serif": "思源宋体",
+                    "source han serif sc": "思源宋体",
+                    "source han serif cn": "思源宋体",
+                    "source han serif tc": "思源宋体",
+                    "noto serif sc": "思源宋体",
+                    "noto serif cjk sc": "思源宋体",
+                    "noto serif cn": "思源宋体",
+                    "noto serif cjk cn": "思源宋体",
                 }
                 
+                # 2. 正则识别常见字重与样式后缀（如 Heavy, Bold, Medium, Regular, Light 等）
+                weight_regex = re.compile(
+                    r'\s+(regular|bold|heavy|medium|light|extralight|extra\s*light|'
+                    r'extrabold|extra\s*bold|semibold|semi\s*bold|demibold|demi\s*bold|'
+                    r'black|thin|normal|\d{3})\b',
+                    re.IGNORECASE
+                )
+                
                 def check_font_missing(font_name):
-                    check_font = font_name.lstrip('@').replace('"', '').replace("'", "").strip().lower()
-                    if not check_font: return False
-                    mapped_font = font_alias_map.get(check_font, check_font)
-                    return (check_font not in sys_fonts) and (mapped_font not in sys_fonts)
+                    raw_clean = font_name.lstrip('@').replace('"', '').replace("'", "").strip().lower()
+                    if not raw_clean:
+                        return False
+                    
+                    # 剥离字重后缀生成基础字族名
+                    stripped_clean = weight_regex.sub('', raw_clean).strip()
+                    candidates = {raw_clean, stripped_clean}
+                    
+                    # 组装待比对池（包含原始名、无字重名及其对应的中文别名）
+                    check_pool = set(candidates)
+                    for c in candidates:
+                        mapped = font_alias_map.get(c)
+                        if mapped:
+                            check_pool.add(mapped.lower())
+                            
+                    # 阶段 A：精确比对系统字体列表
+                    for target in check_pool:
+                        if target in sys_fonts:
+                            return False
+                            
+                    # 阶段 B：前缀与变体智能模糊匹配（兼容系统安装为 "思源黑体 CN"、"思源黑体-Regular" 等）
+                    for target in check_pool:
+                        if any(sf == target or sf.startswith(target + " ") or sf.startswith(target + "-") for sf in sys_fonts):
+                            return False
+                            
+                    return True
 
                 for v_filename in video_files:
                     base_name = os.path.splitext(v_filename)[0]

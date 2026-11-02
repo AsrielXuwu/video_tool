@@ -3993,10 +3993,10 @@ class FFmpegUltimateTool:
 class LicenseAuthWindow:
     def __init__(self):
         # 你的 GitHub 仓库原始 Markdown 链接 (请替换为你自己的真实路径)
-        self.raw_github_url = "https://raw.githubusercontent.com/AsrielXuwu/subtitle_tool/refs/heads/main/whitelist.md"
+        self.raw_github_url = "https://raw.githubusercontent.com/AsrielXuwu/subtitle_tool/refs/heads/main/whitelist.txt"
         # 多个镜像加速通道兜底（针对国内网络）
         self.proxy_urls = [
-            f"https://ghfast.top/{self.raw_github_url}",
+            f"https://ghproxy.org/{self.raw_github_url}",
             f"https://mirror.ghproxy.com/{self.raw_github_url}",
             self.raw_github_url  # 直连兜底
         ]

@@ -12,6 +12,9 @@ import math
 import shutil
 import json
 import pandas as pd
+import hashlib
+import uuid
+import urllib.request
 
 # === 新增：跨平台安全隐藏控制台黑框参数 ===
 if sys.platform.startswith('win'):
@@ -3986,7 +3989,131 @@ class FFmpegUltimateTool:
         if success: messagebox.showinfo("完成", message)
         else: messagebox.showwarning("提示", message)
 
+# ================= 新增：机器码授权验证窗口 =================
+class LicenseAuthWindow:
+    def __init__(self):
+        # 你的 GitHub 仓库原始 Markdown 链接 (请替换为你自己的真实路径)
+        self.raw_github_url = "https://raw.githubusercontent.com/AsrielXuwu/subtitle_tool/refs/heads/main/whitelist.md"
+        # 多个镜像加速通道兜底（针对国内网络）
+        self.proxy_urls = [
+            f"https://ghfast.top/{self.raw_github_url}",
+            f"https://mirror.ghproxy.com/{self.raw_github_url}",
+            self.raw_github_url  # 直连兜底
+        ]
+
+        self.auth_passed = False
+        self.machine_code = self.get_machine_code()
+
+        self.win = tk.Tk()
+        self.win.title("设备授权验证")
+        self.win.geometry("450x260")
+        self.win.resizable(False, False)
+
+        # 窗口居中显示
+        self.win.update_idletasks()
+        w = self.win.winfo_width()
+        h = self.win.winfo_height()
+        x = (self.win.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.win.winfo_screenheight() // 2) - (h // 2)
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+        self.setup_ui()
+
+    def get_machine_code(self):
+        """生成与硬件绑定的唯一机器码 (跨平台取 MAC 与系统信息计算 MD5)"""
+        node_id = str(uuid.getnode())
+        raw_info = f"{sys.platform}-{node_id}"
+        # 生成 16 位大写特征码，格式形如: ABCD-EF01-2345-6789
+        m = hashlib.md5(raw_info.encode('utf-8')).hexdigest().upper()
+        return f"{m[:4]}-{m[4:8]}-{m[8:12]}-{m[12:16]}"
+
+    def setup_ui(self):
+        frame = ttk.Frame(self.win, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="欢迎使用视频处理工具", font=("微软雅黑", 12, "bold")).pack(pady=(0, 5))
+        ttk.Label(frame, text="首次使用需检测设备授权，请将下方机器码提交给管理员加入白名单。", 
+                  wraplength=380, foreground="#555", justify="center").pack(pady=(0, 15))
+
+        f_code = ttk.Frame(frame)
+        f_code.pack(fill=tk.X, pady=5)
+        ttk.Label(f_code, text="本机机器码:").pack(side=tk.LEFT)
+
+        self.entry_code = ttk.Entry(f_code, font=("Consolas", 10, "bold"))
+        self.entry_code.insert(0, self.machine_code)
+        self.entry_code.config(state="readonly")  # 核心要求：只读，严格禁止手动输入编辑
+        self.entry_code.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        btn_copy = ttk.Button(f_code, text="复制", width=6, command=self.copy_code)
+        btn_copy.pack(side=tk.LEFT)
+
+        self.lbl_status = ttk.Label(frame, text="等待验证...", foreground="#777")
+        self.lbl_status.pack(pady=10)
+
+        self.btn_verify = ttk.Button(frame, text="验证本机机器码并进入系统", command=self.start_verify)
+        self.btn_verify.pack(fill=tk.X, ipady=3)
+
+    def copy_code(self):
+        self.win.clipboard_clear()
+        self.win.clipboard_append(self.machine_code)
+        messagebox.showinfo("提示", "机器码已成功复制到剪贴板！")
+
+    def start_verify(self):
+        self.btn_verify.config(state="disabled")
+        self.lbl_status.config(text="正在连接 GitHub 校验白名单，请稍候...", foreground="#0066cc")
+        # 开启后台线程拉取网络，避免界面旋转卡死
+        threading.Thread(target=self._verify_thread, daemon=True).start()
+
+    def _verify_thread(self):
+        whitelist = []
+        is_network_success = False
+
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
+        for url in self.proxy_urls:
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=8) as response:
+                    content = response.read().decode('utf-8')
+                    # 每一行去空格提取
+                    whitelist = [line.strip().upper() for line in content.splitlines() if line.strip()]
+                    is_network_success = True
+                    break
+            except Exception:
+                continue
+
+        if not is_network_success:
+            self.win.after(0, self._on_verify_fail, "连接服务器失败！请检查网络连接后重试。")
+            return
+
+        # 对比白名单
+        if self.machine_code in whitelist:
+            self.win.after(0, self._on_verify_success)
+        else:
+            self.win.after(0, self._on_verify_fail, "授权未通过！本机机器码不在授权白名单中。\n请联系管理员授权。")
+
+    def _on_verify_success(self):
+        self.auth_passed = True
+        self.win.destroy()  # 关掉验证界面，程序将向下流转启动主面板
+
+    def _on_verify_fail(self, error_msg):
+        self.btn_verify.config(state="normal")
+        self.lbl_status.config(text="验证未通过", foreground="red")
+        messagebox.showerror("未获得授权", error_msg)
+
+    def run(self):
+        self.win.mainloop()
+        return self.auth_passed
+
+
+# ================= 程序真正主入口 =================
 if __name__ == "__main__":
-    root = TkinterDnD.Tk()
-    app = FFmpegUltimateTool(root)
-    root.mainloop()
+    # 步骤 1：先调出验证窗体
+    auth = LicenseAuthWindow()
+    passed = auth.run()
+
+    # 步骤 2：仅当验证成功通过时，才唤醒庞大的 TkinterDnD 与主程序界面
+    if passed:
+        root = TkinterDnD.Tk()
+        app = FFmpegUltimateTool(root)
+        root.mainloop()

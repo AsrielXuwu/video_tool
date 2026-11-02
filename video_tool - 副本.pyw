@@ -2045,20 +2045,83 @@ class FFmpegUltimateTool:
             if s_dir and os.path.exists(s_dir):
                 self.root.after(0, self.m_status_text.set, "正在全局预检 ASS 字体完整性...")
                 global_missing_fonts = set()
-                sys_fonts = [f.lower() for f in tkfont.families()]
+                sys_fonts = [f.lower().strip() for f in tkfont.families()]
                 
+                # 1. 扩充中英文字体映射字典（全面涵盖思源黑体/宋体及常见系统字体）
                 font_alias_map = {
-                    "simhei": "黑体", "microsoft yahei": "微软雅黑", "simsun": "宋体",
-                    "fangsong": "仿宋", "kaiti": "楷体", "stsong": "华文宋体",
-                    "stfangsong": "华文仿宋", "stxihei": "华文细黑",
-                    "stkaiti": "华文楷体", "youyuan": "幼圆", "lisu": "隶书"
+                    "simhei": "黑体",
+                    "microsoft yahei": "微软雅黑",
+                    "microsoft yahei ui": "微软雅黑",
+                    "simsun": "宋体",
+                    "nsimsun": "新宋体",
+                    "fangsong": "仿宋",
+                    "kaiti": "楷体",
+                    "stsong": "华文宋体",
+                    "stfangsong": "华文仿宋",
+                    "stxihei": "华文细黑",
+                    "stkaiti": "华文楷体",
+                    "stzhongsong": "华文中宋",
+                    "youyuan": "幼圆",
+                    "lisu": "隶书",
+                    "dengxian": "等线",
+                    "pingfang sc": "苹方",
+                    # 思源黑体族 (Adobe Source Han & Google Noto)
+                    "source han sans": "思源黑体",
+                    "source han sans sc": "思源黑体",
+                    "source han sans cn": "思源黑体",
+                    "source han sans tc": "思源黑体",
+                    "source han sans hk": "思源黑体",
+                    "source han sans k": "思源黑体",
+                    "noto sans sc": "思源黑体",
+                    "noto sans cjk sc": "思源黑体",
+                    "noto sans cn": "思源黑体",
+                    "noto sans cjk cn": "思源黑体",
+                    # 思源宋体族
+                    "source han serif": "思源宋体",
+                    "source han serif sc": "思源宋体",
+                    "source han serif cn": "思源宋体",
+                    "source han serif tc": "思源宋体",
+                    "noto serif sc": "思源宋体",
+                    "noto serif cjk sc": "思源宋体",
+                    "noto serif cn": "思源宋体",
+                    "noto serif cjk cn": "思源宋体",
                 }
                 
+                # 2. 正则识别常见字重与样式后缀（如 Heavy, Bold, Medium, Regular, Light 等）
+                weight_regex = re.compile(
+                    r'\s+(regular|bold|heavy|medium|light|extralight|extra\s*light|'
+                    r'extrabold|extra\s*bold|semibold|semi\s*bold|demibold|demi\s*bold|'
+                    r'black|thin|normal|\d{3})\b',
+                    re.IGNORECASE
+                )
+                
                 def check_font_missing(font_name):
-                    check_font = font_name.lstrip('@').replace('"', '').replace("'", "").strip().lower()
-                    if not check_font: return False
-                    mapped_font = font_alias_map.get(check_font, check_font)
-                    return (check_font not in sys_fonts) and (mapped_font not in sys_fonts)
+                    raw_clean = font_name.lstrip('@').replace('"', '').replace("'", "").strip().lower()
+                    if not raw_clean:
+                        return False
+                    
+                    # 剥离字重后缀生成基础字族名
+                    stripped_clean = weight_regex.sub('', raw_clean).strip()
+                    candidates = {raw_clean, stripped_clean}
+                    
+                    # 组装待比对池（包含原始名、无字重名及其对应的中文别名）
+                    check_pool = set(candidates)
+                    for c in candidates:
+                        mapped = font_alias_map.get(c)
+                        if mapped:
+                            check_pool.add(mapped.lower())
+                            
+                    # 阶段 A：精确比对系统字体列表
+                    for target in check_pool:
+                        if target in sys_fonts:
+                            return False
+                            
+                    # 阶段 B：前缀与变体智能模糊匹配（兼容系统安装为 "思源黑体 CN"、"思源黑体-Regular" 等）
+                    for target in check_pool:
+                        if any(sf == target or sf.startswith(target + " ") or sf.startswith(target + "-") for sf in sys_fonts):
+                            return False
+                            
+                    return True
 
                 for v_filename in video_files:
                     base_name = os.path.splitext(v_filename)[0]
@@ -2129,7 +2192,7 @@ class FFmpegUltimateTool:
                 if self.m_voice_multi_mode.get():
                     sub_dir = os.path.join(a_dir1, base_name)
                     if os.path.exists(sub_dir) and os.path.isdir(sub_dir):
-                        for f in os.listdir(sub_dir):
+                        for f in sorted(os.listdir(sub_dir)):
                             if os.path.splitext(f)[1].lower() in ['.wav', '.mp3', '.flac', '.aac', '.m4a']:
                                 a1_paths.append(os.path.join(sub_dir, f))
                 else:
@@ -2311,8 +2374,10 @@ class FFmpegUltimateTool:
                 
                 if force_tempo and dur_v > 0:
                     dur_a = 0
-                    if has_a1: dur_a = self.get_video_duration(a1_paths[0])
-                    elif has_a2: dur_a = self.get_video_duration(a2_path)
+                    if has_a1: 
+                        dur_a = max([self.get_video_duration(p) for p in a1_paths]) if a1_paths else 0
+                    elif has_a2: 
+                        dur_a = self.get_video_duration(a2_path)
                     
                     if dur_a > 0:
                         ratio = dur_a / dur_v 
@@ -2341,12 +2406,22 @@ class FFmpegUltimateTool:
                         try: v_multi_lufs_val = float(self.m_voice_multi_lufs.get())
                         except: v_multi_lufs_val = -12.0
                         
+                        # 核心修复 1：预先获取所有分轨的时长，找出最大时长作为混音基准
+                        a1_durs = [self.get_video_duration(p) for p in a1_paths]
+                        max_a1_dur = max(a1_durs) if a1_durs else 0
+                        
                         v_multi_inputs = []
                         for _i, idx in enumerate(v_idx_list):
                             chain = []
-                            if resample_filter: chain.append(resample_filter) # <--- 新增插入
+                            if resample_filter: chain.append(resample_filter)
+                            if ch_v_filter: chain.append(ch_v_filter)
                             if self.m_dn_voice.get(): chain.append(dn_filter_v)
                             if v_multi_norm == 3: chain.append(f"loudnorm=I={v_multi_lufs_val}:TP=-1.5:LRA=11")
+                            
+                            # 核心修复 2：短音频在降噪/响度平衡后，末尾自动补齐无损静音至最大时长，防止 amix 中途断流掐线
+                            cur_d = a1_durs[_i] if _i < len(a1_durs) else 0
+                            if max_a1_dur > 0 and cur_d > 0 and (cur_d < max_a1_dur - 0.05):
+                                chain.append(f"apad,atrim=0:{max_a1_dur:.3f},asetpts=PTS-STARTPTS")
                             
                             if chain:
                                 fc_parts.append(f"[{idx}:a:0]{','.join(chain)}[v_sub_{_i}]")

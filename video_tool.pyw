@@ -3993,11 +3993,10 @@ class FFmpegUltimateTool:
 class LicenseAuthWindow:
     def __init__(self):
         # 你的 GitHub 仓库原始 Markdown 链接 (请替换为你自己的真实路径)
-        self.raw_github_url = "https://raw.githubusercontent.com/AsrielXuwu/subtitle_tool/refs/heads/main/whitelist.txt"
+        self.raw_github_url = "https://raw.githubusercontent.com/AsrielXuwu/video_tool/refs/heads/main/whitelist.txt"
         # 多个镜像加速通道兜底（针对国内网络）
         self.proxy_urls = [
             f"https://ghproxy.org/{self.raw_github_url}",
-            f"https://mirror.ghproxy.com/{self.raw_github_url}",
             self.raw_github_url  # 直连兜底
         ]
 
@@ -4065,21 +4064,37 @@ class LicenseAuthWindow:
         threading.Thread(target=self._verify_thread, daemon=True).start()
 
     def _verify_thread(self):
+        import ssl
         whitelist = []
         is_network_success = False
 
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
 
-        for url in self.proxy_urls:
+        # 核心修复 1：创建免校验 SSL 上下文，彻底解决 Python 底层 SSL 握手阻断问题
+        ssl_ctx = ssl._create_unverified_context()
+
+        # 核心修复 2：既然你的网络能直连，优先直连，代理节点作为后备
+        test_urls = [
+            self.raw_github_url,
+            f"https://ghfast.top/{self.raw_github_url}",
+            f"https://mirror.ghproxy.com/{self.raw_github_url}"
+        ]
+
+        for url in test_urls:
             try:
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=8) as response:
-                    content = response.read().decode('utf-8')
-                    # 每一行去空格提取
-                    whitelist = [line.strip().upper() for line in content.splitlines() if line.strip()]
-                    is_network_success = True
-                    break
-            except Exception:
+                # 传入 context=ssl_ctx
+                with urllib.request.urlopen(req, timeout=5, context=ssl_ctx) as response:
+                    if response.status == 200:
+                        content = response.read().decode('utf-8', errors='ignore')
+                        # 按行清洗：去除首尾空格、忽略空行，转大写
+                        whitelist = [line.strip().upper() for line in content.splitlines() if line.strip()]
+                        is_network_success = True
+                        break
+            except Exception as e:
+                print(f"尝试通道 {url} 失败: {e}")
                 continue
 
         if not is_network_success:
@@ -4091,6 +4106,7 @@ class LicenseAuthWindow:
             self.win.after(0, self._on_verify_success)
         else:
             self.win.after(0, self._on_verify_fail, "授权未通过！本机机器码不在授权白名单中。\n请联系管理员授权。")
+
 
     def _on_verify_success(self):
         self.auth_passed = True
